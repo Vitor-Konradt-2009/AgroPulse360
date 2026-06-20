@@ -1471,7 +1471,7 @@ def editar_lote(cadeia, batch_id):
         flash(f"Lote de {cadeia} atualizado com sucesso!")
         return redirect(url_for(cadeia))
 
-    html = f"""
+    html = """
     <h2>Editar Lote de {cadeia.capitalize()}</h2>
     <div class="card" style="max-width:700px;margin:0 auto">
       <form method="post">
