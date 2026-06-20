@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: AgroPulse360
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn AP360:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
