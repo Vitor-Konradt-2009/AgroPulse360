@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "AP360 (Flask app.py)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/app.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "FLASK_ENV": "development"
+      },
+      "justMyCode": true
+    }
+  ]
+}
