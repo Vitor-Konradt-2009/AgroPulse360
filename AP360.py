@@ -480,7 +480,13 @@ BASE_HTML = """
 
 
 def page(content: str, **ctx):
-    return render_template_string(BASE_HTML, content=content, **ctx)
+    # AQUI ESTÁ A MUDANÇA CHAVE:
+    # O content já é o HTML processado pelo Jinja da rota específica.
+    # Não precisamos renderizar ele de novo, apenas passá-lo para o BASE_HTML.
+    # Mas se o content for uma string Jinja pura, ele precisa ser renderizado.
+    # A forma mais segura é sempre renderizar o content também.
+    processed_content = render_template_string(content, **ctx)
+    return render_template_string(BASE_HTML, content=processed_content, **ctx)
 
 
 # =========================================================
@@ -518,7 +524,7 @@ with app.app_context():
 # =========================================================
 @app.route("/")
 def index():
-    html = """
+    html_content = """
     <section class="hero">
       <h1 style="margin:0;font-size:2.15rem">Gestão Agro completa em um único sistema</h1>
       <p class="muted">Agricultura, avicultura, suinocultura e bovinocultura com indicadores, comparativos e histórico.</p>
@@ -528,7 +534,7 @@ def index():
       </div>
     </section>
     """
-    return page(html, title="AP360 | Início")
+    return page(html_content, title="AP360 | Início")
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -549,7 +555,7 @@ def login():
         login_user(user)
         return redirect(url_for("dashboard"))
 
-    html = """
+    html_content = """
     <div class="card" style="max-width:520px;margin:20px auto">
       <h2 style="margin-top:0">Login</h2>
       <form method="post">
@@ -560,7 +566,7 @@ def login():
       <p class="muted">Não tem conta? <a href="{{ url_for('signup_request') }}">Inscreva-se</a></p>
     </div>
     """
-    return page(html, title="AP360 | Login")
+    return page(html_content, title="AP360 | Login")
 
 
 @app.route("/inscreva_se", methods=["GET", "POST"])
@@ -595,7 +601,7 @@ def signup_request():
         flash("Para agilizar, entre em contato via WhatsApp: +55 45 99903-7929")
         return redirect(url_for("signup_request"))
 
-    html = """
+    html_content = """
     <div class="card" style="max-width:700px;margin:0 auto">
       <h2 style="margin-top:0">Inscrição</h2>
       <form method="post">
@@ -618,7 +624,7 @@ def signup_request():
       </p>
     </div>
     """
-    return page(html, title="AP360 | Inscrição")
+    return page(html_content, title="AP360 | Inscrição")
 
 
 @app.route("/ativar/<token>", methods=["GET", "POST"])
@@ -666,7 +672,7 @@ def activate_account(token):
         flash("Conta ativada com sucesso. Faça login para começar!")
         return redirect(url_for("login"))
 
-    html = """
+    html_content = """
     <div class="card" style="max-width:600px;margin:0 auto">
       <h2 style="margin-top:0">Ativar conta</h2>
       <p class="muted">E-mail liberado: <b>{{ inv.email }}</b></p>
@@ -677,7 +683,7 @@ def activate_account(token):
       </form>
     </div>
     """
-    return page(html, inv=inv, title="AP360 | Ativar conta")
+    return page(html_content, inv=inv, title="AP360 | Ativar conta")
 
 
 @app.route("/logout")
@@ -698,7 +704,7 @@ def dashboard():
     su = Batch.query.filter_by(user_id=current_user.id, cadeia="suinocultura").count()
     bo = Bovino.query.filter_by(user_id=current_user.id).count()
 
-    html = """
+    html_content = """
     <section class="hero">
       <h1 style="margin:0">Bem-vindo, <span class="welcome-name">{{ current_user.nome }}</span></h1>
       <p class="muted">
@@ -732,7 +738,7 @@ def dashboard():
       <a class="btn btn-ghost" href="{{ url_for('bovinocultura') }}">Acessar</a>
     </div>
     """
-    return page(html, title="AP360 | Dashboard", ag=ag, av=av, su=su, bo=bo)
+    return page(html_content, title="AP360 | Dashboard", ag=ag, av=av, su=su, bo=bo)
 
 
 # =========================================================
@@ -804,7 +810,7 @@ def admin_panel():
     users = User.query.order_by(User.criado_em.desc()).limit(80).all()
     benches = CoopBenchmark.query.order_by(CoopBenchmark.atualizado_em.desc()).all()
 
-    html = """
+    html_content = """
     <h2>Admin</h2>
 
     <div class="grid">
@@ -886,7 +892,7 @@ def admin_panel():
       </table>
     </div>
     """
-    return page(html, title="AP360 | Admin", reqs=reqs, invites=invites, users=users, benches=benches)
+    return page(html_content, title="AP360 | Admin", reqs=reqs, invites=invites, users=users, benches=benches)
 
 
 # =========================================================
@@ -929,7 +935,7 @@ def agricultura():
 
     hist = AgricultureQuote.query.filter_by(user_id=current_user.id).order_by(AgricultureQuote.criado_em.desc()).limit(30).all()
 
-    html = """
+    html_content = """
     <h2>Agricultura</h2>
     <div class="grid">
       <div class="card">
@@ -999,7 +1005,7 @@ def agricultura():
       </table>
     </div>
     """
-    return page(html, title="AP360 | Agricultura", portos=PORTOS, resultado=resultado, hist=hist)
+    return page(html_content, title="AP360 | Agricultura", portos=PORTOS, resultado=resultado, hist=hist)
 
 
 @app.route("/agricultura/export.csv")
@@ -1043,7 +1049,7 @@ def editar_agricultura(quote_id):
         flash("Cotação agrícola atualizada com sucesso!")
         return redirect(url_for("agricultura"))
 
-    html = """
+    html_content = """
     <h2>Editar Cotação Agrícola</h2>
     <div class="card" style="max-width:700px;margin:0 auto">
       <form method="post">
@@ -1070,7 +1076,7 @@ def editar_agricultura(quote_id):
       </form>
     </div>
     """
-    return page(html, title="AP360 | Editar Cotação", quote=quote, portos=PORTOS)
+    return page(html_content, title="AP360 | Editar Cotação", quote=quote, portos=PORTOS)
 
 
 @app.route("/agricultura/excluir/<int:quote_id>", methods=["POST"])
@@ -1219,7 +1225,7 @@ def modulo_lotes(cadeia):
                 "b_vals": [b2.gpd, b2.ca, b2.ca_ajustada, b2.bonificacao]
             }
 
-    html = """
+    html_content = """
     <h2>{{ cadeia|capitalize }}</h2>
 
     <div class="grid">
@@ -1376,7 +1382,7 @@ def modulo_lotes(cadeia):
       </table>
     </div>
     """
-    return page(html, title=f"AP360 | {cadeia.capitalize()}",
+    return page(html_content, title=f"AP360 | {cadeia.capitalize()}",
                 cadeia=cadeia, resultado=resultado, hist=hist, compare_data=compare_data)
 
 
@@ -1471,53 +1477,53 @@ def editar_lote(cadeia, batch_id):
         flash(f"Lote de {cadeia} atualizado com sucesso!")
         return redirect(url_for(cadeia))
 
-    html = """
-    <h2>Editar Lote de {cadeia.capitalize()}</h2>
+    html_content = """
+    <h2>Editar Lote de {{ cadeia|capitalize }}</h2>
     <div class="card" style="max-width:700px;margin:0 auto">
       <form method="post">
         <label>Estrutura</label>
-        <input name="estrutura" value="{batch.estrutura}" required>
+        <input name="estrutura" value="{{ batch.estrutura }}" required>
         <label>Lote</label>
-        <input name="lote" value="{batch.lote}" required>
+        <input name="lote" value="{{ batch.lote }}" required>
         <label>Peso inicial (kg)</label>
-        <input type="number" step="0.0001" name="peso_inicial" value="{batch.peso_inicial}" required>
+        <input type="number" step="0.0001" name="peso_inicial" value="{{ batch.peso_inicial }}" required>
         <label>Peso final (kg)</label>
-        <input type="number" step="0.0001" name="peso_final" value="{batch.peso_final}" required>
+        <input type="number" step="0.0001" name="peso_final" value="{{ batch.peso_final }}" required>
         <label>Dias de alojamento</label>
-        <input type="number" name="dias" value="{batch.dias}" required>
+        <input type="number" name="dias" value="{{ batch.dias }}" required>
         <label>Ração total (kg)</label>
-        <input type="number" step="0.0001" name="racao_total_kg" value="{batch.racao_total_kg}" required>
+        <input type="number" step="0.0001" name="racao_total_kg" value="{{ batch.racao_total_kg }}" required>
         <label>Animais iniciais</label>
-        <input type="number" name="animais_iniciais" value="{batch.animais_iniciais}" required>
+        <input type="number" name="animais_iniciais" value="{{ batch.animais_iniciais }}" required>
         <label>Animais finais (abatidos/vendidos)</label>
-        <input type="number" name="animais_final" value="{batch.animais_final}" required>
+        <input type="number" name="animais_final" value="{{ batch.animais_final }}" required>
 
         <h4>Referência cooperativa (informada pelo produtor)</h4>
         <label>GPD médio cooperativa (opcional)</label>
-        <input type="number" step="0.0001" name="gpd_coop_ref" value="{batch.gpd_coop_ref}">
+        <input type="number" step="0.0001" name="gpd_coop_ref" value="{{ batch.gpd_coop_ref }}">
         <label>CA média cooperativa (opcional)</label>
-        <input type="number" step="0.0001" name="ca_coop_ref" value="{batch.ca_coop_ref}">
+        <input type="number" step="0.0001" name="ca_coop_ref" value="{{ batch.ca_coop_ref }}">
 
         {% if cadeia == 'avicultura' %}
           <h4>CA Ajustada (Avicultura)</h4>
           <label>Peso meta coop (kg)</label>
-          <input type="number" step="0.0001" name="peso_meta_coop" value="{batch.peso_meta_coop}" required>
+          <input type="number" step="0.0001" name="peso_meta_coop" value="{{ batch.peso_meta_coop }}" required>
           <label>Idade meta coop (dias)</label>
-          <input type="number" name="idade_meta_coop" value="{batch.idade_meta_coop}" required>
+          <input type="number" name="idade_meta_coop" value="{{ batch.idade_meta_coop }}" required>
           <label>Fator peso CAA</label>
-          <input type="number" step="0.0001" name="fator_peso_caa" value="{batch.fator_peso_caa}">
+          <input type="number" step="0.0001" name="fator_peso_caa" value="{{ batch.fator_peso_caa }}">
           <label>Fator idade CAA</label>
-          <input type="number" step="0.0001" name="fator_idade_caa" value="{batch.fator_idade_caa}">
+          <input type="number" step="0.0001" name="fator_idade_caa" value="{{ batch.fator_idade_caa }}">
         {% endif %}
 
         {% if cadeia == 'suinocultura' %}
           <h4>Carcaça e tipificação (Suínos)</h4>
           <label>Peso vivo médio (kg/cab)</label>
-          <input type="number" step="0.01" name="peso_vivo_medio" value="{batch.peso_vivo_medio}" required>
+          <input type="number" step="0.01" name="peso_vivo_medio" value="{{ batch.peso_vivo_medio }}" required>
           <label>Peso carcaça médio (kg/cab)</label>
-          <input type="number" step="0.01" name="peso_carcaca_medio" value="{batch.peso_carcaca_medio}" required>
+          <input type="number" step="0.01" name="peso_carcaca_medio" value="{{ batch.peso_carcaca_medio }}" required>
           <label>% carne magra</label>
-          <input type="number" step="0.01" name="carne_magra_pct" value="{batch.carne_magra_pct}" required>
+          <input type="number" step="0.01" name="carne_magra_pct" value="{{ batch.carne_magra_pct }}" required>
         {% endif %}
 
         <button class="btn btn-ok" type="submit">Salvar Alterações</button>
@@ -1525,7 +1531,7 @@ def editar_lote(cadeia, batch_id):
       </form>
     </div>
     """
-    return page(html, title=f"AP360 | Editar Lote {cadeia.capitalize()}", batch=batch, cadeia=cadeia)
+    return page(html_content, title=f"AP360 | Editar Lote {cadeia.capitalize()}", batch=batch, cadeia=cadeia)
 
 
 @app.route("/<string:cadeia>/excluir/<int:batch_id>", methods=["POST"])
@@ -1612,7 +1618,7 @@ def bovinocultura():
             eventos = BovinoEvento.query.filter_by(bovino_id=animal.id).order_by(BovinoEvento.data.desc()).all()
             chart = {"labels": [p.data for p in pesos], "vals": [p.peso for p in pesos]}
 
-    html = """
+    html_content = """
     <h2>Bovinocultura</h2>
 
     <div class="grid">
@@ -1746,7 +1752,7 @@ def bovinocultura():
     </div>
     {% endif %}
     """
-    return page(html, title="AP360 | Bovinocultura", animais=animais, animal=animal, pesos=pesos, eventos=eventos, chart=chart)
+    return page(html_content, title="AP360 | Bovinocultura", animais=animais, animal=animal, pesos=pesos, eventos=eventos, chart=chart)
 
 
 @app.route("/bovinocultura/editar/<int:bovino_id>", methods=["GET", "POST"])
@@ -1769,7 +1775,7 @@ def editar_bovino(bovino_id):
         flash("Dados do bovino atualizados com sucesso!")
         return redirect(url_for("bovinocultura", animal=bovino.id))
 
-    html = """
+    html_content = """
     <h2>Editar Bovino</h2>
     <div class="card" style="max-width:700px;margin:0 auto">
       <form method="post">
@@ -1803,7 +1809,7 @@ def editar_bovino(bovino_id):
       </form>
     </div>
     """
-    return page(html, title="AP360 | Editar Bovino", bovino=bovino)
+    return page(html_content, title="AP360 | Editar Bovino", bovino=bovino)
 
 
 @app.route("/bovinocultura/excluir/<int:bovino_id>", methods=["POST"])
@@ -1874,7 +1880,7 @@ def ia_local(msg: str):
 @app.route("/ia")
 @login_required
 def ia_page():
-    html = """
+    html_content = """
     <h2>Assistente IA</h2>
     <div class="card">
       <form id="iaForm">
@@ -1895,7 +1901,7 @@ def ia_page():
       });
     </script>
     """
-    return page(html, title="AP360 | IA")
+    return page(html_content, title="AP360 | IA")
 
 
 @app.route("/ia/chat", methods=["POST"])
