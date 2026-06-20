@@ -39,6 +39,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "vitor26.nathank@gmail.com").strip().lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "2021vitor")
+ADMIN_NAME = os.getenv("ADMIN_NAME", "Vitor") # Adicionado para o nome do admin
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -58,7 +59,7 @@ class User(UserMixin, db.Model):
 
     perfil = db.Column(db.String(20), nullable=False, default="produtor")   # admin/produtor
     status = db.Column(db.String(20), nullable=False, default="ativo")       # ativo/bloqueado
-    segmento = db.Column(db.String(20), nullable=True)                       # agricultura/pecuaria
+    segmento = db.Column(db.String(20), nullable=True)                       # agricultura/pecuaria (expandido para avicultura/suinocultura/bovinocultura)
     cooperativa = db.Column(db.String(120), nullable=True)
 
     criado_em = db.Column(db.DateTime, default=datetime.utcnow)
@@ -434,6 +435,11 @@ BASE_HTML = """
     .flash{padding:10px;background:rgba(255,255,255,.12);border:1px solid var(--line);border-radius:10px;margin-bottom:10px}
     .muted{color:var(--muted)}
     .kpi{font-size:1.25rem;font-weight:800}
+    .welcome-name {
+      color: var(--pri);
+      font-weight: 800;
+      text-transform: capitalize;
+    }
   </style>
 </head>
 <body>
@@ -486,7 +492,7 @@ with app.app_context():
     adm = User.query.filter_by(email=ADMIN_EMAIL).first()
     if not adm:
         adm = User(
-            nome="Administrador",
+            nome=ADMIN_NAME, # Usa o nome do admin da variável de ambiente
             email=ADMIN_EMAIL,
             perfil="admin",
             status="ativo",
@@ -496,6 +502,10 @@ with app.app_context():
         adm.set_password(ADMIN_PASSWORD)
         db.session.add(adm)
         db.session.commit()
+    elif adm.nome != ADMIN_NAME: # Atualiza o nome se o admin já existe mas o nome mudou
+        adm.nome = ADMIN_NAME
+        db.session.commit()
+
 
     if CoopBenchmark.query.count() == 0:
         db.session.add(CoopBenchmark(cadeia="avicultura", cooperativa="Coop Padrão", media_gpd=0.066, media_ca=1.68, bonus_base=1000))
@@ -561,22 +571,28 @@ def signup_request():
 
         inv = AccessInvite.query.filter_by(email=email, status="convidado").first()
         if inv:
+            flash("Este e-mail já possui um convite pendente. Por favor, ative sua conta.")
             return redirect(url_for("activate_account", token=inv.token))
+
+        # Verifica se o e-mail já está em uso por um usuário ativo
+        if User.query.filter_by(email=email).first():
+            flash("Este e-mail já está cadastrado. Por favor, faça login.")
+            return redirect(url_for("login"))
 
         req = AccessRequest(
             nome=request.form.get("nome", "").strip(),
             cpf=request.form.get("cpf", "").strip(),
             telefone=request.form.get("telefone", "").strip(),
             email=email,
-            segmento=request.form.get("segmento", "agricultura"),
-            cooperativa=request.form.get("cooperativa", "").strip(),
+            segmento=request.form.get("segmento", "agricultura"), # Pega o segmento escolhido
+            cooperativa=request.form.get("cooperativa", "").strip(), # Cooperativa opcional
             status="pendente"
         )
         db.session.add(req)
         db.session.commit()
 
-        flash("Solicitação recebida. Faça o pagamento e aguarde liberação do admin.")
-        flash("WhatsApp: +55 45 99903-7929")
+        flash("Solicitação de acesso recebida. Em breve você receberá um convite por e-mail para ativar sua conta.")
+        flash("Para agilizar, entre em contato via WhatsApp: +55 45 99903-7929")
         return redirect(url_for("signup_request"))
 
     html = """
@@ -589,13 +605,15 @@ def signup_request():
         <input name="email" type="email" placeholder="E-mail" required>
         <select name="segmento" required>
           <option value="agricultura">Agricultura</option>
-          <option value="pecuaria">Pecuária</option>
+          <option value="avicultura">Avicultura</option>
+          <option value="suinocultura">Suinocultura</option>
+          <option value="bovinocultura">Bovinocultura</option>
         </select>
         <input name="cooperativa" placeholder="Cooperativa (opcional)">
         <button class="btn btn-pri" type="submit">Enviar inscrição</button>
       </form>
       <p class="muted">
-        Pagamento mensal no WhatsApp:
+        Após o envio, aguarde a liberação do acesso. Para agilizar, entre em contato:
         <a target="_blank" href="https://wa.me/5545999037929">+55 45 99903-7929</a>
       </p>
     </div>
@@ -607,7 +625,8 @@ def signup_request():
 def activate_account(token):
     inv = AccessInvite.query.filter_by(token=token, status="convidado").first()
     if not inv:
-        return "Token inválido ou já utilizado.", 400
+        flash("Token inválido ou já utilizado para ativação.")
+        return redirect(url_for("login"))
 
     if request.method == "POST":
         senha = request.form.get("senha", "")
@@ -620,19 +639,19 @@ def activate_account(token):
             flash("Senha deve ter no mínimo 6 caracteres.")
             return redirect(url_for("activate_account", token=token))
         if User.query.filter_by(email=inv.email).first():
-            flash("Conta já existe. Faça login.")
+            flash("Já existe uma conta ativa com este e-mail. Por favor, faça login.")
             return redirect(url_for("login"))
 
         req = AccessRequest.query.get(inv.request_id) if inv.request_id else None
         user = User(
-            nome=req.nome if req else "Produtor",
+            nome=req.nome if req and req.nome else "Produtor",
             cpf=req.cpf if req else None,
             telefone=req.telefone if req else None,
             email=inv.email,
             perfil="produtor",
             status="ativo",
-            segmento=req.segmento if req else "agricultura",
-            cooperativa=req.cooperativa if req else "Coop Padrão"
+            segmento=req.segmento if req and req.segmento else "agricultura", # Pega o segmento da solicitação
+            cooperativa=req.cooperativa if req and req.cooperativa else None # Cooperativa da solicitação
         )
         user.set_password(senha)
 
@@ -644,7 +663,7 @@ def activate_account(token):
         db.session.add(user)
         db.session.commit()
 
-        flash("Conta ativada com sucesso.")
+        flash("Conta ativada com sucesso. Faça login para começar!")
         return redirect(url_for("login"))
 
     html = """
@@ -681,16 +700,37 @@ def dashboard():
 
     html = """
     <section class="hero">
-      <h1 style="margin:0">Bem-vindo, {{ current_user.nome }}</h1>
-      <p class="muted">Segmento: <b>{{ current_user.segmento or "-" }}</b> | Cooperativa: <b>{{ current_user.cooperativa or "-" }}</b></p>
+      <h1 style="margin:0">Bem-vindo, <span class="welcome-name">{{ current_user.nome }}</span></h1>
+      <p class="muted">
+        Segmento principal: <b>{{ current_user.segmento|capitalize or "Não definido" }}</b>
+        {% if current_user.cooperativa %}
+          | Cooperativa: <b>{{ current_user.cooperativa }}</b>
+        {% endif %}
+      </p>
     </section>
 
     <div class="grid3">
-      <div class="card"><div class="muted">Cotações agrícolas</div><div class="kpi">{{ ag }}</div></div>
-      <div class="card"><div class="muted">Lotes avicultura</div><div class="kpi">{{ av }}</div></div>
-      <div class="card"><div class="muted">Lotes suinocultura</div><div class="kpi">{{ su }}</div></div>
+      <div class="card">
+        <div class="muted">Cotações agrícolas</div>
+        <div class="kpi">{{ ag }}</div>
+        <a class="btn btn-ghost" href="{{ url_for('agricultura') }}">Acessar</a>
+      </div>
+      <div class="card">
+        <div class="muted">Lotes avicultura</div>
+        <div class="kpi">{{ av }}</div>
+        <a class="btn btn-ghost" href="{{ url_for('avicultura') }}">Acessar</a>
+      </div>
+      <div class="card">
+        <div class="muted">Lotes suinocultura</div>
+        <div class="kpi">{{ su }}</div>
+        <a class="btn btn-ghost" href="{{ url_for('suinocultura') }}">Acessar</a>
+      </div>
     </div>
-    <div class="card"><div class="muted">Bovinos cadastrados</div><div class="kpi">{{ bo }}</div></div>
+    <div class="card">
+      <div class="muted">Bovinos cadastrados</div>
+      <div class="kpi">{{ bo }}</div>
+      <a class="btn btn-ghost" href="{{ url_for('bovinocultura') }}">Acessar</a>
+    </div>
     """
     return page(html, title="AP360 | Dashboard", ag=ag, av=av, su=su, bo=bo)
 
@@ -936,7 +976,10 @@ def agricultura():
       <h3>Histórico</h3>
       <a class="btn btn-ghost" href="{{ url_for('export_agricultura_csv') }}">Exportar CSV</a>
       <table>
-        <tr><th>Data</th><th>Produto</th><th>Origem</th><th>Porto</th><th>Líquido R$/ton</th><th>Total R$</th></tr>
+        <tr>
+          <th>Data</th><th>Produto</th><th>Origem</th><th>Porto</th><th>Líquido R$/ton</th><th>Total R$</th>
+          <th>Ações</th>
+        </tr>
         {% for h in hist %}
           <tr>
             <td>{{ h.criado_em.strftime("%d/%m %H:%M") }}</td>
@@ -945,6 +988,12 @@ def agricultura():
             <td>{{ h.porto }}</td>
             <td>{{ h.liquido_rs_ton }}</td>
             <td>{{ h.total_rs }}</td>
+            <td>
+              <a class="btn btn-ghost" href="{{ url_for('editar_agricultura', quote_id=h.id) }}">Editar</a>
+              <form method="post" action="{{ url_for('excluir_agricultura', quote_id=h.id) }}" style="display:inline;">
+                <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir esta cotação?');">Excluir</button>
+              </form>
+            </td>
           </tr>
         {% endfor %}
       </table>
@@ -967,6 +1016,71 @@ def export_agricultura_csv():
         ])
     return Response(output.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=agricultura.csv"})
+
+
+@app.route("/agricultura/editar/<int:quote_id>", methods=["GET", "POST"])
+@login_required
+def editar_agricultura(quote_id):
+    quote = AgricultureQuote.query.filter_by(id=quote_id, user_id=current_user.id).first_or_404()
+
+    if request.method == "POST":
+        quote.produto = request.form.get("produto", "").lower()
+        quote.quantidade_ton = float(request.form.get("quantidade_ton", 0))
+        quote.origem = request.form.get("origem", "")
+        quote.porto = request.form.get("porto", "")
+
+        # Recalcula os valores
+        preco_base_rs_ton, cbot_usd = cbot_para_rs_ton(quote.produto)
+        premio_porto = 35.0 if quote.porto in ["Paranaguá", "Santos"] else 28.0
+        quote.export_rs_ton = round(preco_base_rs_ton + premio_porto, 2)
+        quote.frete_rs_ton = frete_medio(quote.origem, quote.porto)
+        quote.liquido_rs_ton = round(quote.export_rs_ton - quote.frete_rs_ton, 2)
+        quote.total_rs = round(quote.liquido_rs_ton * quote.quantidade_ton, 2)
+        quote.cbot_usd_bushel = cbot_usd
+        quote.usd_brl = fx_usd_brl()
+
+        db.session.commit()
+        flash("Cotação agrícola atualizada com sucesso!")
+        return redirect(url_for("agricultura"))
+
+    html = """
+    <h2>Editar Cotação Agrícola</h2>
+    <div class="card" style="max-width:700px;margin:0 auto">
+      <form method="post">
+        <label>Produto</label>
+        <select name="produto" required>
+          <option value="soja" {% if quote.produto == 'soja' %}selected{% endif %}>Soja</option>
+          <option value="milho" {% if quote.produto == 'milho' %}selected{% endif %}>Milho</option>
+          <option value="trigo" {% if quote.produto == 'trigo' %}selected{% endif %}>Trigo</option>
+          <option value="aveia" {% if quote.produto == 'aveia' %}selected{% endif %}>Aveia</option>
+          <option value="arroz" {% if quote.produto == 'arroz' %}selected{% endif %}>Arroz</option>
+        </select>
+        <label>Quantidade (ton)</label>
+        <input type="number" step="0.01" name="quantidade_ton" value="{{ quote.quantidade_ton }}" required>
+        <label>Origem (ex.: Cascavel-PR)</label>
+        <input name="origem" value="{{ quote.origem }}" required>
+        <label>Porto</label>
+        <select name="porto" required>
+          {% for p in portos %}
+            <option value="{{ p }}" {% if quote.porto == p %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn-ok" type="submit">Salvar Alterações</button>
+        <a class="btn btn-ghost" href="{{ url_for('agricultura') }}">Cancelar</a>
+      </form>
+    </div>
+    """
+    return page(html, title="AP360 | Editar Cotação", quote=quote, portos=PORTOS)
+
+
+@app.route("/agricultura/excluir/<int:quote_id>", methods=["POST"])
+@login_required
+def excluir_agricultura(quote_id):
+    quote = AgricultureQuote.query.filter_by(id=quote_id, user_id=current_user.id).first_or_404()
+    db.session.delete(quote)
+    db.session.commit()
+    flash("Cotação agrícola excluída com sucesso!")
+    return redirect(url_for("agricultura"))
 
 
 # =========================================================
@@ -1236,6 +1350,7 @@ def modulo_lotes(cadeia):
         <tr>
           <th>Data</th><th>Estrutura</th><th>Lote</th><th>GPD</th><th>CA</th><th>CAA</th>
           <th>Viab%</th><th>Mort%</th><th>IEP/Índice</th><th>Rend. Carcaça%</th><th>Bônus</th>
+          <th>Ações</th>
         </tr>
         {% for h in hist %}
         <tr>
@@ -1250,6 +1365,12 @@ def modulo_lotes(cadeia):
           <td>{% if cadeia == 'avicultura' %}{{ h.iep }}{% else %}{{ h.indice_lote }}{% endif %}</td>
           <td>{{ h.rendimento_carcaca_pct }}</td>
           <td>R$ {{ h.bonificacao }}</td>
+          <td>
+            <a class="btn btn-ghost" href="{{ url_for('editar_lote', cadeia=cadeia, batch_id=h.id) }}">Editar</a>
+            <form method="post" action="{{ url_for('excluir_lote', cadeia=cadeia, batch_id=h.id) }}" style="display:inline;">
+              <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este lote?');">Excluir</button>
+            </form>
+          </td>
         </tr>
         {% endfor %}
       </table>
@@ -1269,6 +1390,152 @@ def avicultura():
 @login_required
 def suinocultura():
     return modulo_lotes("suinocultura")
+
+
+@app.route("/<string:cadeia>/editar/<int:batch_id>", methods=["GET", "POST"])
+@login_required
+def editar_lote(cadeia, batch_id):
+    batch = Batch.query.filter_by(id=batch_id, user_id=current_user.id, cadeia=cadeia).first_or_404()
+
+    if request.method == "POST":
+        batch.estrutura = request.form.get("estrutura", "").strip()
+        batch.lote = request.form.get("lote", "").strip()
+        batch.peso_inicial = float(request.form.get("peso_inicial", 0))
+        batch.peso_final = float(request.form.get("peso_final", 0))
+        batch.dias = int(request.form.get("dias", 0))
+        batch.racao_total_kg = float(request.form.get("racao_total_kg", 0))
+        batch.animais_iniciais = int(request.form.get("animais_iniciais", 0) or 0)
+        batch.animais_final = int(request.form.get("animais_final", 0) or 0)
+
+        # Recalcula tudo
+        batch.gpd = calc_gpd(batch.peso_inicial, batch.peso_final, batch.dias)
+        batch.ca = calc_ca(batch.racao_total_kg, batch.peso_inicial, batch.peso_final)
+        batch.viabilidade_pct = calc_viabilidade(batch.animais_iniciais, batch.animais_final)
+        batch.mortalidade_pct = calc_mortalidade(batch.animais_iniciais, batch.animais_final)
+
+        # Referência manual (cooperativa informada pelo produtor)
+        batch.ca_coop_ref = float(request.form.get("ca_coop_ref", 0) or 0)
+        batch.gpd_coop_ref = float(request.form.get("gpd_coop_ref", 0) or 0)
+
+        meta_gpd_db, meta_ca_db, bonus_base = get_benchmark(cadeia, current_user.cooperativa)
+        meta_ca = batch.ca_coop_ref if batch.ca_coop_ref > 0 else meta_ca_db
+        meta_gpd = batch.gpd_coop_ref if batch.gpd_coop_ref > 0 else meta_gpd_db
+
+        batch.ca_ajustada = batch.ca # Default
+        batch.iep = 0.0
+        batch.indice_lote = 0.0
+        batch.peso_vivo_medio = 0.0
+        batch.peso_carcaca_medio = 0.0
+        batch.rendimento_carcaca_pct = 0.0
+        batch.carne_magra_pct = 0.0
+        batch.bonus_tipificacao = 0.0
+
+        if cadeia == "avicultura":
+            batch.peso_meta_coop = float(request.form.get("peso_meta_coop", 0) or 0)
+            batch.idade_meta_coop = int(request.form.get("idade_meta_coop", 0) or 0)
+            batch.fator_peso_caa = float(request.form.get("fator_peso_caa", 0.30) or 0.30)
+            batch.fator_idade_caa = float(request.form.get("fator_idade_caa", 0.01) or 0.01)
+
+            if batch.peso_meta_coop > 0 and batch.idade_meta_coop > 0:
+                batch.ca_ajustada = calc_ca_ajustada_avicultura(
+                    ca_observada=batch.ca,
+                    peso_real=batch.peso_final,
+                    idade_real=batch.dias,
+                    peso_meta=batch.peso_meta_coop,
+                    idade_meta=batch.idade_meta_coop,
+                    fator_peso=batch.fator_peso_caa,
+                    fator_idade=batch.fator_idade_caa
+                )
+            batch.iep = calc_iep_avicultura(batch.viabilidade_pct, batch.peso_final, batch.dias, batch.ca_ajustada)
+
+        if cadeia == "suinocultura":
+            batch.peso_vivo_medio = float(request.form.get("peso_vivo_medio", 0) or 0)
+            batch.peso_carcaca_medio = float(request.form.get("peso_carcaca_medio", 0) or 0)
+            batch.carne_magra_pct = float(request.form.get("carne_magra_pct", 0) or 0)
+
+            batch.rendimento_carcaca_pct = calc_rendimento_carcaca(batch.peso_vivo_medio, batch.peso_carcaca_medio)
+
+            if batch.peso_vivo_medio > 0:
+                ajuste_peso = 0.003 * (batch.peso_vivo_medio - 120.0)
+                batch.ca_ajustada = round(max(batch.ca + ajuste_peso, 0.01), 4)
+
+            batch.indice_lote = calc_indice_lote_suino(batch.gpd, batch.viabilidade_pct, batch.ca_ajustada)
+            batch.bonus_tipificacao = calc_bonus_tipificacao(batch.carne_magra_pct, batch.rendimento_carcaca_pct)
+
+        bon = calc_bonificacao(batch.gpd, batch.ca_ajustada, meta_gpd, meta_ca, bonus_base)
+        batch.bonificacao = round(bon + batch.bonus_tipificacao, 2)
+        batch.coop_media_gpd = meta_gpd
+        batch.coop_media_ca = meta_ca
+
+        db.session.commit()
+        flash(f"Lote de {cadeia} atualizado com sucesso!")
+        return redirect(url_for(cadeia))
+
+    html = f"""
+    <h2>Editar Lote de {cadeia.capitalize()}</h2>
+    <div class="card" style="max-width:700px;margin:0 auto">
+      <form method="post">
+        <label>Estrutura</label>
+        <input name="estrutura" value="{batch.estrutura}" required>
+        <label>Lote</label>
+        <input name="lote" value="{batch.lote}" required>
+        <label>Peso inicial (kg)</label>
+        <input type="number" step="0.0001" name="peso_inicial" value="{batch.peso_inicial}" required>
+        <label>Peso final (kg)</label>
+        <input type="number" step="0.0001" name="peso_final" value="{batch.peso_final}" required>
+        <label>Dias de alojamento</label>
+        <input type="number" name="dias" value="{batch.dias}" required>
+        <label>Ração total (kg)</label>
+        <input type="number" step="0.0001" name="racao_total_kg" value="{batch.racao_total_kg}" required>
+        <label>Animais iniciais</label>
+        <input type="number" name="animais_iniciais" value="{batch.animais_iniciais}" required>
+        <label>Animais finais (abatidos/vendidos)</label>
+        <input type="number" name="animais_final" value="{batch.animais_final}" required>
+
+        <h4>Referência cooperativa (informada pelo produtor)</h4>
+        <label>GPD médio cooperativa (opcional)</label>
+        <input type="number" step="0.0001" name="gpd_coop_ref" value="{batch.gpd_coop_ref}">
+        <label>CA média cooperativa (opcional)</label>
+        <input type="number" step="0.0001" name="ca_coop_ref" value="{batch.ca_coop_ref}">
+
+        {% if cadeia == 'avicultura' %}
+          <h4>CA Ajustada (Avicultura)</h4>
+          <label>Peso meta coop (kg)</label>
+          <input type="number" step="0.0001" name="peso_meta_coop" value="{batch.peso_meta_coop}" required>
+          <label>Idade meta coop (dias)</label>
+          <input type="number" name="idade_meta_coop" value="{batch.idade_meta_coop}" required>
+          <label>Fator peso CAA</label>
+          <input type="number" step="0.0001" name="fator_peso_caa" value="{batch.fator_peso_caa}">
+          <label>Fator idade CAA</label>
+          <input type="number" step="0.0001" name="fator_idade_caa" value="{batch.fator_idade_caa}">
+        {% endif %}
+
+        {% if cadeia == 'suinocultura' %}
+          <h4>Carcaça e tipificação (Suínos)</h4>
+          <label>Peso vivo médio (kg/cab)</label>
+          <input type="number" step="0.01" name="peso_vivo_medio" value="{batch.peso_vivo_medio}" required>
+          <label>Peso carcaça médio (kg/cab)</label>
+          <input type="number" step="0.01" name="peso_carcaca_medio" value="{batch.peso_carcaca_medio}" required>
+          <label>% carne magra</label>
+          <input type="number" step="0.01" name="carne_magra_pct" value="{batch.carne_magra_pct}" required>
+        {% endif %}
+
+        <button class="btn btn-ok" type="submit">Salvar Alterações</button>
+        <a class="btn btn-ghost" href="{{ url_for(cadeia) }}">Cancelar</a>
+      </form>
+    </div>
+    """
+    return page(html, title=f"AP360 | Editar Lote {cadeia.capitalize()}", batch=batch, cadeia=cadeia)
+
+
+@app.route("/<string:cadeia>/excluir/<int:batch_id>", methods=["POST"])
+@login_required
+def excluir_lote(cadeia, batch_id):
+    batch = Batch.query.filter_by(id=batch_id, user_id=current_user.id, cadeia=cadeia).first_or_404()
+    db.session.delete(batch)
+    db.session.commit()
+    flash(f"Lote de {cadeia} excluído com sucesso!")
+    return redirect(url_for(cadeia))
 
 
 # =========================================================
@@ -1371,14 +1638,20 @@ def bovinocultura():
       <div class="card">
         <h3>Animais</h3>
         <table>
-          <tr><th>Brinco</th><th>Nome</th><th>Peso</th><th>Status</th><th>Ação</th></tr>
+          <tr><th>Brinco</th><th>Nome</th><th>Peso</th><th>Status</th><th>Ações</th></tr>
           {% for a in animais %}
             <tr>
               <td>{{ a.brinco }}</td>
               <td>{{ a.nome or "-" }}</td>
               <td>{{ a.peso_atual }}</td>
               <td>{{ a.status }}</td>
-              <td><a class="btn btn-ghost" href="{{ url_for('bovinocultura', animal=a.id) }}">Ficha</a></td>
+              <td>
+                <a class="btn btn-ghost" href="{{ url_for('bovinocultura', animal=a.id) }}">Ficha</a>
+                <a class="btn btn-ghost" href="{{ url_for('editar_bovino', bovino_id=a.id) }}">Editar</a>
+                <form method="post" action="{{ url_for('excluir_bovino', bovino_id=a.id) }}" style="display:inline;">
+                  <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este bovino e todos os seus registros?');">Excluir</button>
+                </form>
+              </td>
             </tr>
           {% endfor %}
         </table>
@@ -1438,21 +1711,149 @@ def bovinocultura():
     <div class="card">
       <h3>Histórico de pesagens</h3>
       <table>
-        <tr><th>Data</th><th>Peso (kg)</th></tr>
-        {% for p in pesos %}<tr><td>{{ p.data }}</td><td>{{ p.peso }}</td></tr>{% endfor %}
+        <tr><th>Data</th><th>Peso (kg)</th><th>Ações</th></tr>
+        {% for p in pesos %}
+          <tr>
+            <td>{{ p.data }}</td>
+            <td>{{ p.peso }}</td>
+            <td>
+              <form method="post" action="{{ url_for('excluir_pesagem', peso_id=p.id) }}" style="display:inline;">
+                <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir esta pesagem?');">Excluir</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
       </table>
     </div>
 
     <div class="card">
       <h3>Histórico de eventos</h3>
       <table>
-        <tr><th>Data</th><th>Tipo</th><th>Descrição</th></tr>
-        {% for e in eventos %}<tr><td>{{ e.data }}</td><td>{{ e.tipo }}</td><td>{{ e.descricao }}</td></tr>{% endfor %}
+        <tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Ações</th></tr>
+        {% for e in eventos %}
+          <tr>
+            <td>{{ e.data }}</td>
+            <td>{{ e.tipo }}</td>
+            <td>{{ e.descricao }}</td>
+            <td>
+              <form method="post" action="{{ url_for('excluir_evento', evento_id=e.id) }}" style="display:inline;">
+                <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este evento?');">Excluir</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
       </table>
     </div>
     {% endif %}
     """
     return page(html, title="AP360 | Bovinocultura", animais=animais, animal=animal, pesos=pesos, eventos=eventos, chart=chart)
+
+
+@app.route("/bovinocultura/editar/<int:bovino_id>", methods=["GET", "POST"])
+@login_required
+def editar_bovino(bovino_id):
+    bovino = Bovino.query.filter_by(id=bovino_id, user_id=current_user.id).first_or_404()
+
+    if request.method == "POST":
+        bovino.brinco = request.form.get("brinco", "").strip()
+        bovino.nome = request.form.get("nome", "").strip()
+        bovino.sexo = request.form.get("sexo", "").strip()
+        bovino.raca = request.form.get("raca", "").strip()
+        bovino.nascimento = request.form.get("nascimento", "").strip()
+        bovino.origem = request.form.get("origem", "").strip()
+        bovino.lote = request.form.get("lote", "").strip()
+        bovino.status = request.form.get("status", "ativo")
+        bovino.observacoes = request.form.get("observacoes", "").strip()
+
+        db.session.commit()
+        flash("Dados do bovino atualizados com sucesso!")
+        return redirect(url_for("bovinocultura", animal=bovino.id))
+
+    html = """
+    <h2>Editar Bovino</h2>
+    <div class="card" style="max-width:700px;margin:0 auto">
+      <form method="post">
+        <label>Brinco</label>
+        <input name="brinco" value="{{ bovino.brinco }}" required>
+        <label>Nome</label>
+        <input name="nome" value="{{ bovino.nome or '' }}">
+        <label>Sexo</label>
+        <select name="sexo">
+          <option value="M" {% if bovino.sexo == 'M' %}selected{% endif %}>M</option>
+          <option value="F" {% if bovino.sexo == 'F' %}selected{% endif %}>F</option>
+        </select>
+        <label>Raça</label>
+        <input name="raca" value="{{ bovino.raca or '' }}">
+        <label>Nascimento</label>
+        <input type="date" name="nascimento" value="{{ bovino.nascimento or '' }}">
+        <label>Origem</label>
+        <input name="origem" value="{{ bovino.origem or '' }}">
+        <label>Lote</label>
+        <input name="lote" value="{{ bovino.lote or '' }}">
+        <label>Status</label>
+        <select name="status">
+          <option {% if bovino.status == 'ativo' %}selected{% endif %}>ativo</option>
+          <option {% if bovino.status == 'vendido' %}selected{% endif %}>vendido</option>
+          <option {% if bovino.status == 'descartado' %}selected{% endif %}>descartado</option>
+        </select>
+        <label>Observações</label>
+        <textarea name="observacoes">{{ bovino.observacoes or '' }}</textarea>
+        <button class="btn btn-ok" type="submit">Salvar Alterações</button>
+        <a class="btn btn-ghost" href="{{ url_for('bovinocultura', animal=bovino.id) }}">Cancelar</a>
+      </form>
+    </div>
+    """
+    return page(html, title="AP360 | Editar Bovino", bovino=bovino)
+
+
+@app.route("/bovinocultura/excluir/<int:bovino_id>", methods=["POST"])
+@login_required
+def excluir_bovino(bovino_id):
+    bovino = Bovino.query.filter_by(id=bovino_id, user_id=current_user.id).first_or_404()
+    # Excluir pesagens e eventos relacionados primeiro
+    BovinoPeso.query.filter_by(bovino_id=bovino.id).delete()
+    BovinoEvento.query.filter_by(bovino_id=bovino.id).delete()
+    db.session.delete(bovino)
+    db.session.commit()
+    flash("Bovino e todos os seus registros excluídos com sucesso!")
+    return redirect(url_for("bovinocultura"))
+
+
+@app.route("/bovinocultura/pesagem/excluir/<int:peso_id>", methods=["POST"])
+@login_required
+def excluir_pesagem(peso_id):
+    peso_registro = BovinoPeso.query.get_or_404(peso_id)
+    bovino_id = peso_registro.bovino_id
+    bovino = Bovino.query.filter_by(id=bovino_id, user_id=current_user.id).first_or_404()
+
+    db.session.delete(peso_registro)
+    db.session.commit()
+
+    # Atualiza o peso_atual e ultima_pesagem do bovino
+    ultima_pesagem = BovinoPeso.query.filter_by(bovino_id=bovino.id).order_by(BovinoPeso.data.desc()).first()
+    if ultima_pesagem:
+        bovino.peso_atual = ultima_pesagem.peso
+        bovino.ultima_pesagem = ultima_pesagem.data
+    else:
+        bovino.peso_atual = 0.0
+        bovino.ultima_pesagem = None
+    db.session.commit()
+
+    flash("Registro de pesagem excluído com sucesso!")
+    return redirect(url_for("bovinocultura", animal=bovino_id))
+
+
+@app.route("/bovinocultura/evento/excluir/<int:evento_id>", methods=["POST"])
+@login_required
+def excluir_evento(evento_id):
+    evento_registro = BovinoEvento.query.get_or_404(evento_id)
+    bovino_id = evento_registro.bovino_id
+    bovino = Bovino.query.filter_by(id=bovino_id, user_id=current_user.id).first_or_404()
+
+    db.session.delete(evento_registro)
+    db.session.commit()
+    flash("Registro de evento excluído com sucesso!")
+    return redirect(url_for("bovinocultura", animal=bovino_id))
 
 
 # =========================================================
