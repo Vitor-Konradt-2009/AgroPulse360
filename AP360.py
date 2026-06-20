@@ -480,12 +480,9 @@ BASE_HTML = """
 
 
 def page(content: str, **ctx):
-    # AQUI ESTÁ A MUDANÇA CHAVE:
-    # O content já é o HTML processado pelo Jinja da rota específica.
-    # Não precisamos renderizar ele de novo, apenas passá-lo para o BASE_HTML.
-    # Mas se o content for uma string Jinja pura, ele precisa ser renderizado.
-    # A forma mais segura é sempre renderizar o content também.
+    # Renderiza o conteúdo específico da página com o contexto fornecido
     processed_content = render_template_string(content, **ctx)
+    # Renderiza o BASE_HTML, injetando o conteúdo processado
     return render_template_string(BASE_HTML, content=processed_content, **ctx)
 
 
@@ -711,6 +708,8 @@ def dashboard():
         Segmento principal: <b>{{ current_user.segmento|capitalize or "Não definido" }}</b>
         {% if current_user.cooperativa %}
           | Cooperativa: <b>{{ current_user.cooperativa }}</b>
+        {% else %}
+          | Cooperativa: <b>Indefinida</b>
         {% endif %}
       </p>
     </section>
@@ -807,7 +806,7 @@ def admin_panel():
 
     reqs = AccessRequest.query.order_by(AccessRequest.criado_em.desc()).limit(80).all()
     invites = AccessInvite.query.order_by(AccessInvite.criado_em.desc()).limit(80).all()
-    users = User.query.order_by(User.criado_em.desc()).limit(80).all()
+    users = User.query.filter(User.perfil != "admin").order_by(User.criado_em.desc()).limit(80).all() # Não mostra o admin aqui
     benches = CoopBenchmark.query.order_by(CoopBenchmark.atualizado_em.desc()).all()
 
     html_content = """
@@ -827,8 +826,8 @@ def admin_panel():
         <form method="post">
           <input type="hidden" name="form_type" value="benchmark">
           <select name="cadeia" required>
-            <option value="avicultura">avicultura</option>
-            <option value="suinocultura">suinocultura</option>
+            <option value="avicultura" {% if cadeia == 'avicultura' %}selected{% endif %}>Avicultura</option>
+            <option value="suinocultura" {% if cadeia == 'suinocultura' %}selected{% endif %}>Suinocultura</option>
           </select>
           <input name="cooperativa" placeholder="Nome cooperativa" required>
           <input type="number" step="0.0001" name="media_gpd" placeholder="Média GPD" required>
@@ -848,7 +847,7 @@ def admin_panel():
           <td>{{ r.criado_em.strftime("%d/%m %H:%M") }}</td>
           <td>{{ r.nome }}</td>
           <td>{{ r.email }}</td>
-          <td>{{ r.segmento }}</td>
+          <td>{{ r.segmento|capitalize }}</td>
           <td>{{ r.status }}</td>
           <td>
             <form method="post" style="margin:0">
@@ -875,9 +874,16 @@ def admin_panel():
     <div class="card">
       <h3>Usuários</h3>
       <table>
-        <tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Status</th><th>Segmento</th></tr>
+        <tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Status</th><th>Segmento</th><th>Cooperativa</th></tr>
         {% for u in users %}
-          <tr><td>{{ u.nome }}</td><td>{{ u.email }}</td><td>{{ u.perfil }}</td><td>{{ u.status }}</td><td>{{ u.segmento or '-' }}</td></tr>
+          <tr>
+            <td>{{ u.nome }}</td>
+            <td>{{ u.email }}</td>
+            <td>{{ u.perfil }}</td>
+            <td>{{ u.status }}</td>
+            <td>{{ u.segmento|capitalize or '-' }}</td>
+            <td>{{ u.cooperativa or 'Indefinida' }}</td>
+          </tr>
         {% endfor %}
       </table>
     </div>
@@ -887,7 +893,7 @@ def admin_panel():
       <table>
         <tr><th>Cadeia</th><th>Cooperativa</th><th>GPD</th><th>CA</th><th>Base bônus</th></tr>
         {% for b in benches %}
-          <tr><td>{{ b.cadeia }}</td><td>{{ b.cooperativa }}</td><td>{{ b.media_gpd }}</td><td>{{ b.media_ca }}</td><td>{{ b.bonus_base }}</td></tr>
+          <tr><td>{{ b.cadeia|capitalize }}</td><td>{{ b.cooperativa }}</td><td>{{ b.media_gpd }}</td><td>{{ b.media_ca }}</td><td>{{ b.bonus_base }}</td></tr>
         {% endfor %}
       </table>
     </div>
@@ -989,7 +995,7 @@ def agricultura():
         {% for h in hist %}
           <tr>
             <td>{{ h.criado_em.strftime("%d/%m %H:%M") }}</td>
-            <td>{{ h.produto }}</td>
+            <td>{{ h.produto|capitalize }}</td>
             <td>{{ h.origem }}</td>
             <td>{{ h.porto }}</td>
             <td>{{ h.liquido_rs_ton }}</td>
@@ -1316,7 +1322,7 @@ def modulo_lotes(cadeia):
           <label>Lote A</label>
           <select name="c1" required>
             {% for h in hist %}
-              <option value="{{ h.id }}">{{ h.estrutura }} / {{ h.lote }} ({{ h.criado_em.strftime("%d/%m") }})</option>
+              <option value="{{ h.id }}" {% if c1 == h.id %}selected{% endif %}>{{ h.estrutura }} / {{ h.lote }} ({{ h.criado_em.strftime("%d/%m") }})</option>
             {% endfor %}
           </select>
         </div>
@@ -1324,7 +1330,7 @@ def modulo_lotes(cadeia):
           <label>Lote B</label>
           <select name="c2" required>
             {% for h in hist %}
-              <option value="{{ h.id }}">{{ h.estrutura }} / {{ h.lote }} ({{ h.criado_em.strftime("%d/%m") }})</option>
+              <option value="{{ h.id }}" {% if c2 == h.id %}selected{% endif %}>{{ h.estrutura }} / {{ h.lote }} ({{ h.criado_em.strftime("%d/%m") }})</option>
             {% endfor %}
           </select>
         </div>
@@ -1383,7 +1389,7 @@ def modulo_lotes(cadeia):
     </div>
     """
     return page(html_content, title=f"AP360 | {cadeia.capitalize()}",
-                cadeia=cadeia, resultado=resultado, hist=hist, compare_data=compare_data)
+                cadeia=cadeia, resultado=resultado, hist=hist, compare_data=compare_data, c1=c1, c2=c2)
 
 
 @app.route("/avicultura", methods=["GET", "POST"])
@@ -1555,8 +1561,8 @@ def bovinocultura():
 
         if form_type == "novo_bovino":
             brinco = request.form.get("brinco", "").strip()
-            if Bovino.query.filter_by(brinco=brinco).first():
-                flash("Brinco já cadastrado.")
+            if Bovino.query.filter_by(brinco=brinco, user_id=current_user.id).first(): # Adicionado user_id para unicidade por usuário
+                flash("Brinco já cadastrado para este usuário.")
                 return redirect(url_for("bovinocultura"))
 
             b = Bovino(
@@ -1628,12 +1634,19 @@ def bovinocultura():
           <input type="hidden" name="form_type" value="novo_bovino">
           <input name="brinco" placeholder="Brinco (único)" required>
           <input name="nome" placeholder="Nome">
-          <select name="sexo"><option value="M">M</option><option value="F">F</option></select>
+          <select name="sexo">
+            <option value="M">M</option>
+            <option value="F">F</option>
+          </select>
           <input name="raca" placeholder="Raça">
           <label>Nascimento</label><input type="date" name="nascimento">
           <input name="origem" placeholder="Origem">
           <input name="lote" placeholder="Lote">
-          <select name="status"><option>ativo</option><option>vendido</option><option>descartado</option></select>
+          <select name="status">
+            <option value="ativo">Ativo</option>
+            <option value="vendido">Vendido</option>
+            <option value="descartado">Descartado</option>
+          </select>
           <input type="number" step="0.01" name="peso_atual" placeholder="Peso atual (kg)">
           <label>Última pesagem</label><input type="date" name="ultima_pesagem">
           <textarea name="observacoes" placeholder="Observações"></textarea>
@@ -1650,7 +1663,7 @@ def bovinocultura():
               <td>{{ a.brinco }}</td>
               <td>{{ a.nome or "-" }}</td>
               <td>{{ a.peso_atual }}</td>
-              <td>{{ a.status }}</td>
+              <td>{{ a.status|capitalize }}</td>
               <td>
                 <a class="btn btn-ghost" href="{{ url_for('bovinocultura', animal=a.id) }}">Ficha</a>
                 <a class="btn btn-ghost" href="{{ url_for('editar_bovino', bovino_id=a.id) }}">Editar</a>
@@ -1700,12 +1713,12 @@ def bovinocultura():
           <input type="hidden" name="form_type" value="novo_evento">
           <input type="hidden" name="bovino_id" value="{{ animal.id }}">
           <select name="tipo">
-            <option>vacina</option>
-            <option>vermifugo</option>
-            <option>manejo</option>
-            <option>inseminacao</option>
-            <option>parto</option>
-            <option>tratamento</option>
+            <option value="vacina">Vacina</option>
+            <option value="vermifugo">Vermífugo</option>
+            <option value="manejo">Manejo</option>
+            <option value="inseminacao">Inseminação</option>
+            <option value="parto">Parto</option>
+            <option value="tratamento">Tratamento</option>
           </select>
           <label>Data</label><input type="date" name="data" required>
           <textarea name="descricao" placeholder="Descrição do evento" required></textarea>
@@ -1739,7 +1752,7 @@ def bovinocultura():
         {% for e in eventos %}
           <tr>
             <td>{{ e.data }}</td>
-            <td>{{ e.tipo }}</td>
+            <td>{{ e.tipo|capitalize }}</td>
             <td>{{ e.descricao }}</td>
             <td>
               <form method="post" action="{{ url_for('excluir_evento', evento_id=e.id) }}" style="display:inline;">
@@ -1798,9 +1811,9 @@ def editar_bovino(bovino_id):
         <input name="lote" value="{{ bovino.lote or '' }}">
         <label>Status</label>
         <select name="status">
-          <option {% if bovino.status == 'ativo' %}selected{% endif %}>ativo</option>
-          <option {% if bovino.status == 'vendido' %}selected{% endif %}>vendido</option>
-          <option {% if bovino.status == 'descartado' %}selected{% endif %}>descartado</option>
+          <option value="ativo" {% if bovino.status == 'ativo' %}selected{% endif %}>Ativo</option>
+          <option value="vendido" {% if bovino.status == 'vendido' %}selected{% endif %}>Vendido</option>
+          <option value="descartado" {% if bovino.status == 'descartado' %}selected{% endif %}>Descartado</option>
         </select>
         <label>Observações</label>
         <textarea name="observacoes">{{ bovino.observacoes or '' }}</textarea>
