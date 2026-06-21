@@ -64,11 +64,24 @@ class User(UserMixin, db.Model):
 
     criado_em = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # Novos campos para benchmarks pessoais do usuário
+    user_avicultura_gpd = db.Column(db.Float, default=0.0)
+    user_avicultura_ca = db.Column(db.Float, default=0.0)
+    user_avicultura_bonus_base = db.Column(db.Float, default=0.0)
+
+    user_suinocultura_gpd = db.Column(db.Float, default=0.0)
+    user_suinocultura_ca = db.Column(db.Float, default=0.0)
+    user_suinocultura_bonus_base = db.Column(db.Float, default=0.0)
+
+
     def set_password(self, raw: str):
         self.password_hash = generate_password_hash(raw)
 
     def check_password(self, raw: str):
         return check_password_hash(self.password_hash, raw)
+
+    def is_active(self):
+        return self.status == "ativo"
 
 
 class AccessRequest(db.Model):
@@ -363,13 +376,26 @@ def calc_bonificacao(gpd, ca, meta_gpd=0.065, meta_ca=1.70, base=1000.0):
     return round(base * bonus_pct, 2)
 
 
-def get_benchmark(cadeia, cooperativa):
-    if not cooperativa:
+def get_effective_benchmark(cadeia: str, cooperativa: str, user: User):
+    # 1. Tenta pegar os benchmarks pessoais do usuário
+    if cadeia == "avicultura" and user.user_avicultura_gpd > 0 and user.user_avicultura_ca > 0:
+        return user.user_avicultura_gpd, user.user_avicultura_ca, user.user_avicultura_bonus_base
+    elif cadeia == "suinocultura" and user.user_suinocultura_gpd > 0 and user.user_suinocultura_ca > 0:
+        return user.user_suinocultura_gpd, user.user_suinocultura_ca, user.user_suinocultura_bonus_base
+
+    # 2. Se não tiver pessoal, tenta pegar da cooperativa
+    if cooperativa:
+        row = CoopBenchmark.query.filter_by(cadeia=cadeia, cooperativa=cooperativa).first()
+        if row:
+            return row.media_gpd or 0.065, row.media_ca or 1.70, row.bonus_base or 1000.0
+
+    # 3. Se nada disso, usa os padrões globais
+    # Padrões globais para avicultura e suinocultura
+    if cadeia == "avicultura":
         return 0.065, 1.70, 1000.0
-    row = CoopBenchmark.query.filter_by(cadeia=cadeia, cooperativa=cooperativa).first()
-    if row:
-        return row.media_gpd or 0.065, row.media_ca or 1.70, row.bonus_base or 1000.0
-    return 0.065, 1.70, 1000.0
+    elif cadeia == "suinocultura":
+        return 0.72, 2.45, 1200.0
+    return 0.0, 0.0, 0.0 # Caso a cadeia não seja reconhecida
 
 
 # =========================================================
@@ -394,6 +420,7 @@ BASE_HTML = """
       --muted:#d4deef;
       --ok:#46dd98;
       --pri:#3bb9ff;
+      --danger:#ff4d4d; /* Adicionado para botões de exclusão/negação */
     }
     *{box-sizing:border-box}
     body{
@@ -427,6 +454,7 @@ BASE_HTML = """
     .btn-ok{background:linear-gradient(135deg,var(--ok),#38c984);color:#042516}
     .btn-pri{background:linear-gradient(135deg,var(--pri),#718aff);color:#041a30}
     .btn-ghost{background:rgba(255,255,255,.14);color:#fff}
+    .btn-danger{background:linear-gradient(135deg,var(--danger),#cc3d3d);color:#fff} /* Estilo para botão de perigo */
     input,select,textarea{
       width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;
       background:rgba(255,255,255,.08);color:#fff;margin:5px 0
@@ -556,8 +584,8 @@ def login():
         if not user or not user.check_password(senha):
             flash("Credenciais inválidas.")
             return redirect(url_for("login"))
-        if user.status != "ativo":
-            flash("Conta bloqueada ou pendente.")
+        if not user.is_active(): # Usa o novo método is_active
+            flash("Sua conta está bloqueada ou pendente. Entre em contato com o administrador.")
             return redirect(url_for("login"))
 
         login_user(user)
@@ -583,15 +611,23 @@ def signup_request():
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
 
+        # Verifica se o e-mail já está em uso por um usuário ativo
+        if User.query.filter_by(email=email).first():
+            flash("Este e-mail já está cadastrado. Por favor, faça login.")
+            return redirect(url_for("login"))
+
+        # Verifica se já existe uma solicitação pendente ou negada para este e-mail
+        existing_request = AccessRequest.query.filter_by(email=email).first()
+        if existing_request and existing_request.status in ["pendente", "negado"]:
+            flash("Já existe uma solicitação de acesso para este e-mail. Aguarde a análise ou entre em contato.")
+            return redirect(url_for("signup_request"))
+
+        # Verifica se já existe um convite pendente
         inv = AccessInvite.query.filter_by(email=email, status="convidado").first()
         if inv:
             flash("Este e-mail já possui um convite pendente. Por favor, ative sua conta.")
             return redirect(url_for("activate_account", token=inv.token))
 
-        # Verifica se o e-mail já está em uso por um usuário ativo
-        if User.query.filter_by(email=email).first():
-            flash("Este e-mail já está cadastrado. Por favor, faça login.")
-            return redirect(url_for("login"))
 
         req = AccessRequest(
             nome=request.form.get("nome", "").strip(),
@@ -747,8 +783,50 @@ def dashboard():
       <div class="kpi">{{ bo }}</div>
       <a class="btn btn-ghost" href="{{ url_for('bovinocultura') }}">Acessar</a>
     </div>
+
+    <div class="card">
+      <h3>Meus Benchmarks Pessoais</h3>
+      <p class="muted">Defina seus próprios benchmarks para avicultura e suinocultura. Se preenchidos, eles terão prioridade sobre os benchmarks da cooperativa.</p>
+      <form method="post" action="{{ url_for('update_user_benchmarks') }}">
+        <input type="hidden" name="form_type" value="user_benchmarks">
+        <h4>Avicultura</h4>
+        <label>GPD Médio (Avicultura)</label>
+        <input type="number" step="0.0001" name="user_avicultura_gpd" value="{{ current_user.user_avicultura_gpd }}" placeholder="Ex: 0.065">
+        <label>CA Médio (Avicultura)</label>
+        <input type="number" step="0.0001" name="user_avicultura_ca" value="{{ current_user.user_avicultura_ca }}" placeholder="Ex: 1.70">
+        <label>Base Bônus R$ (Avicultura)</label>
+        <input type="number" step="0.01" name="user_avicultura_bonus_base" value="{{ current_user.user_avicultura_bonus_base }}" placeholder="Ex: 1000.00">
+
+        <h4>Suinocultura</h4>
+        <label>GPD Médio (Suinocultura)</label>
+        <input type="number" step="0.0001" name="user_suinocultura_gpd" value="{{ current_user.user_suinocultura_gpd }}" placeholder="Ex: 0.72">
+        <label>CA Médio (Suinocultura)</label>
+        <input type="number" step="0.0001" name="user_suinocultura_ca" value="{{ current_user.user_suinocultura_ca }}" placeholder="Ex: 2.45">
+        <label>Base Bônus R$ (Suinocultura)</label>
+        <input type="number" step="0.01" name="user_suinocultura_bonus_base" value="{{ current_user.user_suinocultura_bonus_base }}" placeholder="Ex: 1200.00">
+
+        <button class="btn btn-pri" type="submit">Salvar Meus Benchmarks</button>
+      </form>
+    </div>
     """
     return page(html_content, title="AP360 | Dashboard", ag=ag, av=av, su=su, bo=bo)
+
+
+@app.route("/update_user_benchmarks", methods=["POST"])
+@login_required
+def update_user_benchmarks():
+    if request.form.get("form_type") == "user_benchmarks":
+        current_user.user_avicultura_gpd = float(request.form.get("user_avicultura_gpd", 0) or 0)
+        current_user.user_avicultura_ca = float(request.form.get("user_avicultura_ca", 0) or 0)
+        current_user.user_avicultura_bonus_base = float(request.form.get("user_avicultura_bonus_base", 0) or 0)
+
+        current_user.user_suinocultura_gpd = float(request.form.get("user_suinocultura_gpd", 0) or 0)
+        current_user.user_suinocultura_ca = float(request.form.get("user_suinocultura_ca", 0) or 0)
+        current_user.user_suinocultura_bonus_base = float(request.form.get("user_suinocultura_bonus_base", 0) or 0)
+
+        db.session.commit()
+        flash("Seus benchmarks pessoais foram atualizados com sucesso!")
+    return redirect(url_for("dashboard"))
 
 
 # =========================================================
@@ -820,6 +898,20 @@ def admin_panel():
             flash("Benchmark salvo.")
             return redirect(url_for("admin_panel"))
 
+        if form_type == "delete_benchmark":
+            # Apenas o admin 'Vitor' pode apagar benchmarks
+            if current_user.nome != ADMIN_NAME:
+                flash("Você não tem permissão para apagar benchmarks.")
+                return redirect(url_for("admin_panel"))
+
+            benchmark_id = request.form.get("benchmark_id")
+            benchmark_to_delete = CoopBenchmark.query.get_or_404(benchmark_id)
+            db.session.delete(benchmark_to_delete)
+            db.session.commit()
+            flash(f"Benchmark da cooperativa '{benchmark_to_delete.cooperativa}' ({benchmark_to_delete.cadeia}) excluído com sucesso!")
+            return redirect(url_for("admin_panel"))
+
+
     reqs = AccessRequest.query.order_by(AccessRequest.criado_em.desc()).limit(80).all()
     invites = AccessInvite.query.order_by(AccessInvite.criado_em.desc()).limit(80).all()
     users = User.query.filter(User.perfil != "admin").order_by(User.criado_em.desc()).limit(80).all() # Não mostra o admin aqui
@@ -853,13 +945,13 @@ def admin_panel():
             <button class="btn btn-pri" type="submit">Salvar</button>
           </form>
         {% else %}
-          <p class="muted">Apenas o administrador '{{ admin_name }}' pode editar os benchmarks.</p>
+          <p class="muted">Apenas o administrador '{{ admin_name }}' pode editar os benchmarks gerais.</p>
         {% endif %}
       </div>
     </div>
 
     <div class="card">
-      <h3>Solicitações</h3>
+      <h3>Solicitações de Acesso</h3>
       <table>
         <tr><th>Data</th><th>Nome</th><th>Email</th><th>Segmento</th><th>Status</th><th>Ação</th></tr>
         {% for r in reqs %}
@@ -870,11 +962,18 @@ def admin_panel():
           <td>{{ r.segmento|capitalize }}</td>
           <td>{{ r.status }}</td>
           <td>
-            <form method="post" style="margin:0">
-              <input type="hidden" name="form_type" value="approve_request">
-              <input type="hidden" name="request_id" value="{{ r.id }}">
-              <button class="btn btn-ok" type="submit">Gerar convite</button>
-            </form>
+            {% if r.status == 'pendente' %}
+              <form method="post" style="margin:0; display:inline-block;">
+                <input type="hidden" name="form_type" value="approve_request">
+                <input type="hidden" name="request_id" value="{{ r.id }}">
+                <button class="btn btn-ok" type="submit">Gerar convite</button>
+              </form>
+              <form method="post" action="{{ url_for('deny_access_request', request_id=r.id) }}" style="margin:0; display:inline-block;">
+                <button type="submit" class="btn btn-danger" onclick="return confirm('Tem certeza que deseja NEGAR esta solicitação?');">Negar</button>
+              </form>
+            {% else %}
+              <span class="muted">{{ r.status|capitalize }}</span>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -892,9 +991,9 @@ def admin_panel():
     </div>
 
     <div class="card">
-      <h3>Usuários</h3>
+      <h3>Usuários Cadastrados</h3>
       <table>
-        <tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Status</th><th>Segmento</th><th>Cooperativa</th></tr>
+        <tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Status</th><th>Segmento</th><th>Cooperativa</th><th>Ações</th></tr>
         {% for u in users %}
           <tr>
             <td>{{ u.nome }}</td>
@@ -903,22 +1002,86 @@ def admin_panel():
             <td>{{ u.status }}</td>
             <td>{{ u.segmento|capitalize or '-' }}</td>
             <td>{{ u.cooperativa or 'Indefinida' }}</td>
+            <td>
+              {% if u.status == 'ativo' %}
+                <form method="post" action="{{ url_for('block_user', user_id=u.id) }}" style="margin:0; display:inline-block;">
+                  <button type="submit" class="btn btn-danger" onclick="return confirm('Tem certeza que deseja BLOQUEAR o acesso deste usuário?');">Bloquear</button>
+                </form>
+              {% else %}
+                <form method="post" action="{{ url_for('unblock_user', user_id=u.id) }}" style="margin:0; display:inline-block;">
+                  <button type="submit" class="btn btn-ok" onclick="return confirm('Tem certeza que deseja DESBLOQUEAR o acesso deste usuário?');">Desbloquear</button>
+                </form>
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
       </table>
     </div>
 
     <div class="card">
-      <h3>Benchmarks</h3>
+      <h3>Benchmarks Gerais</h3>
       <table>
-        <tr><th>Cadeia</th><th>Cooperativa</th><th>GPD</th><th>CA</th><th>Base bônus</th></tr>
+        <tr><th>Cadeia</th><th>Cooperativa</th><th>GPD</th><th>CA</th><th>Base bônus</th><th>Ações</th></tr>
         {% for b in benches %}
-          <tr><td>{{ b.cadeia|capitalize }}</td><td>{{ b.cooperativa }}</td><td>{{ b.media_gpd }}</td><td>{{ b.media_ca }}</td><td>{{ b.bonus_base }}</td></tr>
+          <tr>
+            <td>{{ b.cadeia|capitalize }}</td>
+            <td>{{ b.cooperativa }}</td>
+            <td>{{ b.media_gpd }}</td>
+            <td>{{ b.media_ca }}</td>
+            <td>{{ b.bonus_base }}</td>
+            <td>
+              {% if current_user.nome == admin_name %}
+                <form method="post" action="{{ url_for('admin_panel') }}" style="display:inline;">
+                  <input type="hidden" name="form_type" value="delete_benchmark">
+                  <input type="hidden" name="benchmark_id" value="{{ b.id }}">
+                  <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este benchmark?');">Excluir</button>
+                </form>
+              {% else %}
+                <span class="muted">Sem permissão</span>
+              {% endif %}
+            </td>
+          </tr>
         {% endfor %}
       </table>
     </div>
     """
     return page(html_content, title="AP360 | Admin", reqs=reqs, invites=invites, users=users, benches=benches, admin_name=ADMIN_NAME)
+
+
+@app.route("/admin/block_user/<int:user_id>", methods=["POST"])
+@login_required
+@admin_required
+def block_user(user_id):
+    user = User.query.get_or_404(user_id)
+    if user.perfil == "admin":
+        flash("Não é possível bloquear outro administrador.")
+        return redirect(url_for("admin_panel"))
+    user.status = "bloqueado"
+    db.session.commit()
+    flash(f"Usuário {user.email} bloqueado com sucesso.")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/unblock_user/<int:user_id>", methods=["POST"])
+@login_required
+@admin_required
+def unblock_user(user_id):
+    user = User.query.get_or_404(user_id)
+    user.status = "ativo"
+    db.session.commit()
+    flash(f"Usuário {user.email} desbloqueado com sucesso.")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/deny_access_request/<int:request_id>", methods=["POST"])
+@login_required
+@admin_required
+def deny_access_request(request_id):
+    req = AccessRequest.query.get_or_404(request_id)
+    req.status = "negado"
+    db.session.commit()
+    flash(f"Solicitação de acesso de {req.email} negada com sucesso.")
+    return redirect(url_for("admin_panel"))
 
 
 # =========================================================
@@ -1134,15 +1297,16 @@ def modulo_lotes(cadeia):
         animais_iniciais = int(request.form.get("animais_iniciais", 0) or 0)
         animais_final = int(request.form.get("animais_final", 0) or 0)
 
-        # benchmark base do admin
-        meta_gpd_db, meta_ca_db, bonus_base = get_benchmark(cadeia, current_user.cooperativa)
+        # benchmark base: prioriza pessoal, depois cooperativa, depois global
+        meta_gpd_efetivo, meta_ca_efetivo, bonus_base_efetivo = get_effective_benchmark(cadeia, current_user.cooperativa, current_user)
 
-        # referência manual informada pelo produtor (opcional)
+        # referência manual informada pelo produtor (opcional, sobrescreve efetivo)
         ca_coop_ref = float(request.form.get("ca_coop_ref", 0) or 0)
         gpd_coop_ref = float(request.form.get("gpd_coop_ref", 0) or 0)
 
-        meta_ca = ca_coop_ref if ca_coop_ref > 0 else meta_ca_db
-        meta_gpd = gpd_coop_ref if gpd_coop_ref > 0 else meta_gpd_db
+        meta_ca = ca_coop_ref if ca_coop_ref > 0 else meta_ca_efetivo
+        meta_gpd = gpd_coop_ref if gpd_coop_ref > 0 else meta_gpd_efetivo
+        bonus_base = bonus_base_efetivo # A referência manual não sobrescreve a base de bônus, apenas GPD/CA
 
         gpd = calc_gpd(peso_i, peso_f, dias)
         ca = calc_ca(racao, peso_i, peso_f)
@@ -1267,9 +1431,10 @@ def modulo_lotes(cadeia):
           <input type="number" name="animais_iniciais" placeholder="Animais iniciais" required>
           <input type="number" name="animais_final" placeholder="Animais finais (abatidos/vendidos)" required>
 
-          <h4>Referência cooperativa (informada pelo produtor)</h4>
-          <input type="number" step="0.0001" name="gpd_coop_ref" placeholder="GPD médio coop (opcional)" value="{{ current_user.cooperativa_gpd_ref if current_user.cooperativa_gpd_ref else '' }}">
-          <input type="number" step="0.0001" name="ca_coop_ref" placeholder="CA média coop (opcional)" value="{{ current_user.cooperativa_ca_ref if current_user.cooperativa_ca_ref else '' }}">
+          <h4>Minhas referências para este lote (opcional)</h4>
+          <p class="muted">Se preenchido, estes valores sobrescrevem seus benchmarks pessoais e os da cooperativa para este lote.</p>
+          <input type="number" step="0.0001" name="gpd_coop_ref" placeholder="GPD médio (opcional)">
+          <input type="number" step="0.0001" name="ca_coop_ref" placeholder="CA média (opcional)">
 
           {% if cadeia == 'avicultura' %}
             <h4>CA Ajustada (Avicultura)</h4>
@@ -1449,9 +1614,12 @@ def editar_lote(cadeia, batch_id):
         batch.ca_coop_ref = float(request.form.get("ca_coop_ref", 0) or 0)
         batch.gpd_coop_ref = float(request.form.get("gpd_coop_ref", 0) or 0)
 
-        meta_gpd_db, meta_ca_db, bonus_base = get_benchmark(cadeia, current_user.cooperativa)
-        meta_ca = batch.ca_coop_ref if batch.ca_coop_ref > 0 else meta_ca_db
-        meta_gpd = batch.gpd_coop_ref if batch.gpd_coop_ref > 0 else meta_gpd_db
+        # benchmark base: prioriza pessoal, depois cooperativa, depois global
+        meta_gpd_efetivo, meta_ca_efetivo, bonus_base_efetivo = get_effective_benchmark(cadeia, current_user.cooperativa, current_user)
+
+        meta_ca = batch.ca_coop_ref if batch.ca_coop_ref > 0 else meta_ca_efetivo
+        meta_gpd = batch.gpd_coop_ref if batch.gpd_coop_ref > 0 else meta_gpd_efetivo
+        bonus_base = bonus_base_efetivo
 
         batch.ca_ajustada = batch.ca # Default
         batch.iep = 0.0
@@ -1489,7 +1657,7 @@ def editar_lote(cadeia, batch_id):
 
             if batch.peso_vivo_medio > 0:
                 ajuste_peso = 0.003 * (batch.peso_vivo_medio - 120.0)
-                batch.ca_ajustada = round(max(batch.ca + ajuste_peso, 0.01), 4)
+                ca_ajustada = round(max(batch.ca + ajuste_peso, 0.01), 4)
 
             batch.indice_lote = calc_indice_lote_suino(batch.gpd, batch.viabilidade_pct, batch.ca_ajustada)
             batch.bonus_tipificacao = calc_bonus_tipificacao(batch.carne_magra_pct, batch.rendimento_carcaca_pct)
@@ -1524,11 +1692,12 @@ def editar_lote(cadeia, batch_id):
         <label>Animais finais (abatidos/vendidos)</label>
         <input type="number" name="animais_final" value="{{ batch.animais_final }}" required>
 
-        <h4>Referência cooperativa (informada pelo produtor)</h4>
-        <label>GPD médio cooperativa (opcional)</label>
-        <input type="number" step="0.0001" name="gpd_coop_ref" value="{{ batch.gpd_coop_ref }}" placeholder="GPD médio coop (opcional)">
-        <label>CA média cooperativa (opcional)</label>
-        <input type="number" step="0.0001" name="ca_coop_ref" value="{{ batch.ca_coop_ref }}" placeholder="CA média coop (opcional)">
+        <h4>Minhas referências para este lote (opcional)</h4>
+        <p class="muted">Se preenchido, estes valores sobrescrevem seus benchmarks pessoais e os da cooperativa para este lote.</p>
+        <label>GPD médio (opcional)</label>
+        <input type="number" step="0.0001" name="gpd_coop_ref" value="{{ batch.gpd_coop_ref }}" placeholder="GPD médio (opcional)">
+        <label>CA média (opcional)</label>
+        <input type="number" step="0.0001" name="ca_coop_ref" value="{{ batch.ca_coop_ref }}" placeholder="CA média (opcional)">
 
         {% if cadeia == 'avicultura' %}
           <h4>CA Ajustada (Avicultura)</h4>
