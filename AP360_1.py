@@ -100,7 +100,7 @@ class AccessInvite(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), nullable=False, unique=True, index=True)
     token = db.Column(db.String(120), nullable=False, unique=True, index=True)
-    status = db.Column(db.String(20), default="convidado")  # convidado/ativado
+    status = db.Column(db.String(20), default="convidado")  # convidado/ativado/revogado
     request_id = db.Column(db.Integer, db.ForeignKey("access_request.id"), nullable=True)
     criado_em = db.Column(db.DateTime, default=datetime.utcnow)
     ativado_em = db.Column(db.DateTime, nullable=True)
@@ -971,6 +971,10 @@ def admin_panel():
               <form method="post" action="{{ url_for('deny_access_request', request_id=r.id) }}" style="margin:0; display:inline-block;">
                 <button type="submit" class="btn btn-danger" onclick="return confirm('Tem certeza que deseja NEGAR esta solicitação?');">Negar</button>
               </form>
+            {% elif r.status == 'liberado' %}
+              <form method="post" action="{{ url_for('deny_access_request', request_id=r.id) }}" style="margin:0; display:inline-block;">
+                <button type="submit" class="btn btn-danger" onclick="return confirm('Tem certeza que deseja NEGAR esta solicitação e revogar o convite?');">Negar/Revogar</button>
+              </form>
             {% else %}
               <span class="muted">{{ r.status|capitalize }}</span>
             {% endif %}
@@ -983,9 +987,22 @@ def admin_panel():
     <div class="card">
       <h3>Convites</h3>
       <table>
-        <tr><th>Email</th><th>Status</th><th>Token</th></tr>
+        <tr><th>Email</th><th>Status</th><th>Token</th><th>Ação</th></tr>
         {% for i in invites %}
-          <tr><td>{{ i.email }}</td><td>{{ i.status }}</td><td>{{ i.token }}</td></tr>
+          <tr>
+            <td>{{ i.email }}</td>
+            <td>{{ i.status }}</td>
+            <td>{{ i.token }}</td>
+            <td>
+              {% if i.status == 'convidado' %}
+                <form method="post" action="{{ url_for('revoke_invite', invite_id=i.id) }}" style="margin:0; display:inline-block;">
+                  <button type="submit" class="btn btn-danger" onclick="return confirm('Tem certeza que deseja REVOGAR este convite? O usuário não poderá mais ativá-lo.');">Revogar</button>
+                </form>
+              {% else %}
+                <span class="muted">{{ i.status|capitalize }}</span>
+              {% endif %}
+            </td>
+          </tr>
         {% endfor %}
       </table>
     </div>
@@ -1079,8 +1096,32 @@ def unblock_user(user_id):
 def deny_access_request(request_id):
     req = AccessRequest.query.get_or_404(request_id)
     req.status = "negado"
+    # Se houver um convite associado a esta solicitação, ele também deve ser revogado
+    invite = AccessInvite.query.filter_by(request_id=req.id, status="convidado").first()
+    if invite:
+        invite.status = "revogado"
     db.session.commit()
-    flash(f"Solicitação de acesso de {req.email} negada com sucesso.")
+    flash(f"Solicitação de acesso de {req.email} negada e convite revogado (se existia).")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/revoke_invite/<int:invite_id>", methods=["POST"])
+@login_required
+@admin_required
+def revoke_invite(invite_id):
+    invite = AccessInvite.query.get_or_404(invite_id)
+    if invite.status == "ativado":
+        flash("Não é possível revogar um convite já ativado. Bloqueie o usuário diretamente.")
+        return redirect(url_for("admin_panel"))
+
+    invite.status = "revogado"
+    # Se houver uma solicitação de acesso associada, ela pode ser marcada como negada também
+    if invite.request_id:
+        req = AccessRequest.query.get(invite.request_id)
+        if req and req.status != "liberado": # Não sobrescreve se já foi liberado e está aguardando ativação
+            req.status = "negado"
+    db.session.commit()
+    flash(f"Convite para {invite.email} revogado com sucesso.")
     return redirect(url_for("admin_panel"))
 
 
