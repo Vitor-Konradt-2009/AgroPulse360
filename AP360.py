@@ -62,12 +62,6 @@ class User(UserMixin, db.Model):
     segmento = db.Column(db.String(20), nullable=True)                       # agricultura/pecuaria (expandido para avicultura/suinocultura/bovinocultura)
     cooperativa = db.Column(db.String(120), nullable=True)
 
-    # Benchmarks personalizados do produtor
-    gpd_produtor_avicultura = db.Column(db.Float, default=0.0)
-    ca_produtor_avicultura = db.Column(db.Float, default=0.0)
-    gpd_produtor_suinocultura = db.Column(db.Float, default=0.0)
-    ca_produtor_suinocultura = db.Column(db.Float, default=0.0)
-
     criado_em = db.Column(db.DateTime, default=datetime.utcnow)
 
     def set_password(self, raw: str):
@@ -347,40 +341,37 @@ def calc_bonus_tipificacao(carne_magra_pct: float, rendimento_carcaca_pct: float
     if carne_magra_pct >= 58:
         score += 0.6
     elif carne_magra_pct >= 56:
-        score += 0.4
+        score += 0.35
     elif carne_magra_pct >= 54:
-        score += 0.2
+        score += 0.15
 
     if rendimento_carcaca_pct >= 78:
-        score += 0.5
+        score += 0.4
     elif rendimento_carcaca_pct >= 76:
-        score += 0.3
-    elif rendimento_carcaca_pct >= 74:
-        score += 0.1
+        score += 0.2
 
-    return round(score * base_rs, 2)
+    return round(base_rs * score, 2)
 
 
-def calc_bonificacao(gpd: float, ca_ajustada: float, coop_gpd: float, coop_ca: float, bonus_base: float) -> float:
-    if coop_gpd <= 0 or coop_ca <= 0:
+def calc_bonificacao(gpd, ca, meta_gpd=0.065, meta_ca=1.70, base=1000.0):
+    if ca <= 0:
         return 0.0
-
-    score_gpd = (gpd / coop_gpd) - 1
-    score_ca = (coop_ca / ca_ajustada) - 1
-
-    bonus = (score_gpd + score_ca) / 2 * bonus_base
-    return round(max(0.0, bonus), 2)
+    score = (gpd / meta_gpd) * 50 + (meta_ca / ca) * 50
+    bonus_pct = max(-0.20, min(0.35, (score - 100) / 100))
+    return round(base * bonus_pct, 2)
 
 
-def get_benchmark(cadeia: str, user: User):
-    coop_benchmark = CoopBenchmark.query.filter_by(cadeia=cadeia, cooperativa=user.cooperativa).first()
-    if coop_benchmark:
-        return coop_benchmark.media_gpd, coop_benchmark.media_ca, coop_benchmark.bonus_base
-    return 0.0, 0.0, 0.0
+def get_benchmark(cadeia, cooperativa):
+    if not cooperativa:
+        return 0.065, 1.70, 1000.0
+    row = CoopBenchmark.query.filter_by(cadeia=cadeia, cooperativa=cooperativa).first()
+    if row:
+        return row.media_gpd or 0.065, row.media_ca or 1.70, row.bonus_base or 1000.0
+    return 0.065, 1.70, 1000.0
 
 
 # =========================================================
-# BASE HTML E FUNÇÃO PAGE
+# UI BASE
 # =========================================================
 BASE_HTML = """
 <!doctype html>
@@ -449,18 +440,6 @@ BASE_HTML = """
       font-weight: 800;
       text-transform: capitalize;
     }
-    /* CSS para as opções de seleção - CORRIGIDO */
-    select {
-      color: var(--text); /* Garante que o texto do select seja visível */
-    }
-    select option {
-      background-color: #2a3a5b; /* Fundo escuro para as opções */
-      color: var(--text);            /* Texto claro para as opções */
-    }
-    select option:checked {
-      background-color: var(--pri); /* Fundo azul para a opção selecionada */
-      color: #fff;                  /* Texto branco para a opção selecionada */
-    }
   </style>
 </head>
 <body>
@@ -472,8 +451,8 @@ BASE_HTML = """
         {% if current_user.is_authenticated %}
           <a href="{{ url_for('dashboard') }}">Dashboard</a>
           <a href="{{ url_for('agricultura') }}">Agricultura</a>
-          <a href="{{ url_for('avicultura', cadeia='avicultura') }}">Avicultura</a>
-          <a href="{{ url_for('suinocultura', cadeia='suinocultura') }}">Suinocultura</a>
+          <a href="{{ url_for('avicultura') }}">Avicultura</a>
+          <a href="{{ url_for('suinocultura') }}">Suinocultura</a>
           <a href="{{ url_for('bovinocultura') }}">Bovinocultura</a>
           <a href="{{ url_for('ia_page') }}">IA</a>
           {% if current_user.perfil == "admin" %}
@@ -488,13 +467,9 @@ BASE_HTML = """
       </div>
     </div>
 
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        {% for m in messages %}
-          <div class="flash">{{ m }}</div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
+    {% for m in get_flashed_messages() %}
+      <div class="flash">{{ m }}</div>
+    {% endfor %}
 
     {{ content|safe }}
   </div>
@@ -504,213 +479,426 @@ BASE_HTML = """
 """
 
 
-def page(content, **kwargs):
-    """Renderiza o conteúdo dentro do BASE_HTML."""
-    ctx = dict(
-        current_user=current_user,
-        url_for=url_for,
-        get_flashed_messages=get_flashed_messages, # CORRIGIDO AQUI
-        **kwargs
-    )
-    return render_template_string(BASE_HTML, content=content, **ctx)
+def page(content: str, **ctx):
+    # Renderiza o conteúdo específico da página com o contexto fornecido
+    processed_content = render_template_string(content, **ctx)
+    # Renderiza o BASE_HTML, injetando o conteúdo processado
+    return render_template_string(BASE_HTML, content=processed_content, **ctx)
 
 
 # =========================================================
-# ROUTES
+# INIT DB
+# =========================================================
+with app.app_context():
+    db.create_all()
+
+    adm = User.query.filter_by(email=ADMIN_EMAIL).first()
+    if not adm:
+        adm = User(
+            nome=ADMIN_NAME, # Usa o nome do admin da variável de ambiente
+            email=ADMIN_EMAIL,
+            perfil="admin",
+            status="ativo",
+            segmento="agricultura",
+            cooperativa="Coop Padrão"
+        )
+        adm.set_password(ADMIN_PASSWORD)
+        db.session.add(adm)
+        db.session.commit()
+    elif adm.nome != ADMIN_NAME: # Atualiza o nome se o admin já existe mas o nome mudou
+        adm.nome = ADMIN_NAME
+        db.session.commit()
+
+
+    if CoopBenchmark.query.count() == 0:
+        db.session.add(CoopBenchmark(cadeia="avicultura", cooperativa="Coop Padrão", media_gpd=0.066, media_ca=1.68, bonus_base=1000))
+        db.session.add(CoopBenchmark(cadeia="suinocultura", cooperativa="Coop Padrão", media_gpd=0.72, media_ca=2.45, bonus_base=1200))
+        db.session.commit()
+
+
+# =========================================================
+# HOME / AUTH
 # =========================================================
 @app.route("/")
 def index():
-    if current_user.is_authenticated:
-        return redirect(url_for("dashboard"))
     html_content = """
-    <div class="hero">
-      <h1>Bem-vindo ao AP360</h1>
-      <p class="muted">Sua plataforma completa para gestão e análise de dados no agronegócio.</p>
-      <p>
-        <a href="{{ url_for('login') }}" class="btn btn-pri">Login</a>
-        <a href="{{ url_for('signup_request') }}" class="btn btn-ghost">Solicitar Acesso</a>
-      </p>
-    </div>
+    <section class="hero">
+      <h1 style="margin:0;font-size:2.15rem">Gestão Agro completa em um único sistema</h1>
+      <p class="muted">Agricultura, avicultura, suinocultura e bovinocultura com indicadores, comparativos e histórico.</p>
+      <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+        <a class="btn btn-ok" href="{{ url_for('login') }}">Entrar</a>
+        <a class="btn btn-pri" href="{{ url_for('signup_request') }}">Criar acesso</a>
+      </div>
+    </section>
     """
     return page(html_content, title="AP360 | Início")
 
 
 @app.route("/login", methods=["GET", "POST"])
+@app.route("/login/", methods=["GET", "POST"])
 def login():
-    if current_user.is_authenticated:
-        return redirect(url_for("dashboard"))
-
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
-        password = request.form.get("password", "").strip()
-        user = User.query.filter_by(email=email).first()
+        senha = request.form.get("senha", "")
 
-        if user and user.check_password(password):
-            if user.status == "ativo":
-                login_user(user)
-                flash(f"Bem-vindo de volta, {user.nome}!")
-                return redirect(url_for("dashboard"))
-            else:
-                flash("Sua conta está bloqueada ou inativa. Entre em contato com o administrador.")
-        else:
-            flash("Email ou senha inválidos.")
+        user = User.query.filter_by(email=email).first()
+        if not user or not user.check_password(senha):
+            flash("Credenciais inválidas.")
+            return redirect(url_for("login"))
+        if user.status != "ativo":
+            flash("Conta bloqueada ou pendente.")
+            return redirect(url_for("login"))
+
+        login_user(user)
+        return redirect(url_for("dashboard"))
+
     html_content = """
-    <div class="card" style="max-width:400px;margin:0 auto">
-      <h2>Login</h2>
+    <div class="card" style="max-width:520px;margin:20px auto">
+      <h2 style="margin-top:0">Login</h2>
       <form method="post">
-        <input type="email" name="email" placeholder="Email" required>
-        <input type="password" name="password" placeholder="Senha" required>
-        <button class="btn btn-pri" type="submit">Entrar</button>
+        <input type="email" name="email" placeholder="Seu e-mail" required>
+        <input type="password" name="senha" placeholder="Sua senha" required>
+        <button class="btn btn-ok" type="submit">Entrar</button>
       </form>
-      <p class="muted">Não tem uma conta? <a href="{{ url_for('signup_request') }}">Solicite acesso</a></p>
+      <p class="muted">Não tem conta? <a href="{{ url_for('signup_request') }}">Inscreva-se</a></p>
     </div>
     """
     return page(html_content, title="AP360 | Login")
+
+
+@app.route("/inscreva_se", methods=["GET", "POST"])
+@app.route("/inscreva-se", methods=["GET", "POST"])
+def signup_request():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+
+        inv = AccessInvite.query.filter_by(email=email, status="convidado").first()
+        if inv:
+            flash("Este e-mail já possui um convite pendente. Por favor, ative sua conta.")
+            return redirect(url_for("activate_account", token=inv.token))
+
+        # Verifica se o e-mail já está em uso por um usuário ativo
+        if User.query.filter_by(email=email).first():
+            flash("Este e-mail já está cadastrado. Por favor, faça login.")
+            return redirect(url_for("login"))
+
+        req = AccessRequest(
+            nome=request.form.get("nome", "").strip(),
+            cpf=request.form.get("cpf", "").strip(),
+            telefone=request.form.get("telefone", "").strip(),
+            email=email,
+            segmento=request.form.get("segmento", "agricultura"), # Pega o segmento escolhido
+            cooperativa=request.form.get("cooperativa", "").strip(), # Cooperativa opcional
+            status="pendente"
+        )
+        db.session.add(req)
+        db.session.commit()
+
+        flash("Solicitação de acesso recebida. Em breve você receberá um convite por e-mail para ativar sua conta.")
+        flash("Para agilizar, entre em contato via WhatsApp: +55 45 99903-7929")
+        return redirect(url_for("signup_request"))
+
+    html_content = """
+    <div class="card" style="max-width:700px;margin:0 auto">
+      <h2 style="margin-top:0">Inscrição</h2>
+      <form method="post">
+        <input name="nome" placeholder="Nome completo" required>
+        <input name="cpf" placeholder="CPF" required>
+        <input name="telefone" placeholder="Telefone" required>
+        <input name="email" type="email" placeholder="E-mail" required>
+        <select name="segmento" required>
+          <option value="agricultura">Agricultura</option>
+          <option value="avicultura">Avicultura</option>
+          <option value="suinocultura">Suinocultura</option>
+          <option value="bovinocultura">Bovinocultura</option>
+        </select>
+        <input name="cooperativa" placeholder="Cooperativa (opcional)">
+        <button class="btn btn-pri" type="submit">Enviar inscrição</button>
+      </form>
+      <p class="muted">
+        Após o envio, aguarde a liberação do acesso. Para agilizar, entre em contato:
+        <a target="_blank" href="https://wa.me/5545999037929">+55 45 99903-7929</a>
+      </p>
+    </div>
+    """
+    return page(html_content, title="AP360 | Inscrição")
+
+
+@app.route("/ativar/<token>", methods=["GET", "POST"])
+def activate_account(token):
+    inv = AccessInvite.query.filter_by(token=token, status="convidado").first()
+    if not inv:
+        flash("Token inválido ou já utilizado para ativação.")
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        senha = request.form.get("senha", "")
+        confirmar = request.form.get("confirmar_senha", "")
+
+        if senha != confirmar:
+            flash("Senha e confirmação não conferem.")
+            return redirect(url_for("activate_account", token=token))
+        if len(senha) < 6:
+            flash("Senha deve ter no mínimo 6 caracteres.")
+            return redirect(url_for("activate_account", token=token))
+        if User.query.filter_by(email=inv.email).first():
+            flash("Já existe uma conta ativa com este e-mail. Por favor, faça login.")
+            return redirect(url_for("login"))
+
+        req = AccessRequest.query.get(inv.request_id) if inv.request_id else None
+        user = User(
+            nome=req.nome if req and req.nome else "Produtor",
+            cpf=req.cpf if req else None,
+            telefone=req.telefone if req else None,
+            email=inv.email,
+            perfil="produtor",
+            status="ativo",
+            segmento=req.segmento if req and req.segmento else "agricultura", # Pega o segmento da solicitação
+            cooperativa=req.cooperativa if req and req.cooperativa else None # Cooperativa da solicitação
+        )
+        user.set_password(senha)
+
+        inv.status = "ativado"
+        inv.ativado_em = datetime.utcnow()
+        if req:
+            req.status = "liberado"
+
+        db.session.add(user)
+        db.session.commit()
+
+        flash("Conta ativada com sucesso. Faça login para começar!")
+        return redirect(url_for("login"))
+
+    html_content = """
+    <div class="card" style="max-width:600px;margin:0 auto">
+      <h2 style="margin-top:0">Ativar conta</h2>
+      <p class="muted">E-mail liberado: <b>{{ inv.email }}</b></p>
+      <form method="post">
+        <input type="password" name="senha" placeholder="Crie sua senha" required>
+        <input type="password" name="confirmar_senha" placeholder="Confirme sua senha" required>
+        <button class="btn btn-ok" type="submit">Ativar</button>
+      </form>
+    </div>
+    """
+    return page(html_content, inv=inv, title="AP360 | Ativar conta")
 
 
 @app.route("/logout")
 @login_required
 def logout():
     logout_user()
-    flash("Você foi desconectado.")
-    return redirect(url_for("index"))
+    return redirect(url_for("login"))
 
 
-@app.route("/signup_request", methods=["GET", "POST"])
-def signup_request():
-    if current_user.is_authenticated:
-        return redirect(url_for("dashboard"))
-
-    if request.method == "POST":
-        nome = request.form.get("nome", "").strip()
-        cpf = request.form.get("cpf", "").strip()
-        telefone = request.form.get("telefone", "").strip()
-        email = request.form.get("email", "").strip().lower()
-        segmento = request.form.get("segmento", "").strip()
-        cooperativa = request.form.get("cooperativa", "").strip()
-
-        if User.query.filter_by(email=email).first() or AccessRequest.query.filter_by(email=email, status="pendente").first():
-            flash("Já existe uma solicitação ou conta com este email.")
-        else:
-            new_request = AccessRequest(
-                nome=nome,
-                cpf=cpf,
-                telefone=telefone,
-                email=email,
-                segmento=segmento,
-                cooperativa=cooperativa
-            )
-            db.session.add(new_request)
-            db.session.commit()
-            flash("Sua solicitação de acesso foi enviada e será revisada pelo administrador.")
-            return redirect(url_for("index"))
-    html_content = """
-    <div class="card" style="max-width:600px;margin:0 auto">
-      <h2>Solicitar Acesso</h2>
-      <form method="post">
-        <input name="nome" placeholder="Nome Completo" required>
-        <input name="cpf" placeholder="CPF (opcional)">
-        <input name="telefone" placeholder="Telefone (opcional)">
-        <input type="email" name="email" placeholder="Email" required>
-        <label>Segmento</label>
-        <select name="segmento">
-          <option value="agricultura">Agricultura</option>
-          <option value="avicultura">Avicultura</option>
-          <option value="suinocultura">Suinocultura</option>
-          <option value="bovinocultura">Bovinocultura</option>
-        </select>
-        <input name="cooperativa" placeholder="Nome da Cooperativa (opcional)">
-        <button class="btn btn-pri" type="submit">Enviar Solicitação</button>
-      </form>
-      <p class="muted">Já tem um convite? <a href="{{ url_for('signup_invite') }}">Ativar convite</a></p>
-    </div>
-    """
-    return page(html_content, title="AP360 | Solicitar Acesso")
-
-
-@app.route("/signup_invite", methods=["GET", "POST"])
-def signup_invite():
-    if current_user.is_authenticated:
-        return redirect(url_for("dashboard"))
-
-    if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
-        token = request.form.get("token", "").strip()
-        password = request.form.get("password", "").strip()
-        nome = request.form.get("nome", "").strip()
-        cpf = request.form.get("cpf", "").strip()
-        telefone = request.form.get("telefone", "").strip()
-        segmento = request.form.get("segmento", "").strip()
-        cooperativa = request.form.get("cooperativa", "").strip()
-
-        invite = AccessInvite.query.filter_by(email=email, token=token, status="convidado").first()
-        if not invite:
-            flash("Email ou token de convite inválidos ou já utilizados.")
-            return redirect(url_for("signup_invite"))
-
-        if User.query.filter_by(email=email).first():
-            flash("Já existe uma conta com este email.")
-            return redirect(url_for("signup_invite"))
-
-        new_user = User(
-            nome=nome,
-            cpf=cpf,
-            telefone=telefone,
-            email=email,
-            segmento=segmento,
-            cooperativa=cooperativa,
-            perfil="produtor",
-            status="ativo"
-        )
-        new_user.set_password(password)
-        db.session.add(new_user)
-
-        invite.status = "ativado"
-        invite.ativado_em = datetime.utcnow()
-        db.session.commit()
-
-        login_user(new_user)
-        flash("Sua conta foi criada e você está logado!")
-        return redirect(url_for("dashboard"))
-
-    html_content = """
-    <div class="card" style="max-width:600px;margin:0 auto">
-      <h2>Ativar Convite</h2>
-      <form method="post">
-        <input type="email" name="email" placeholder="Email do convite" required>
-        <input name="token" placeholder="Token de convite" required>
-        <input type="password" name="password" placeholder="Crie sua senha" required>
-        <input name="nome" placeholder="Nome Completo" required>
-        <input name="cpf" placeholder="CPF (opcional)">
-        <input name="telefone" placeholder="Telefone (opcional)">
-        <label>Segmento</label>
-        <select name="segmento">
-          <option value="agricultura">Agricultura</option>
-          <option value="avicultura">Avicultura</option>
-          <option value="suinocultura">Suinocultura</option>
-          <option value="bovinocultura">Bovinocultura</option>
-        </select>
-        <input name="cooperativa" placeholder="Nome da Cooperativa (opcional)">
-        <button class="btn btn-pri" type="submit">Ativar Convite</button>
-      </form>
-    </div>
-    """
-    return page(html_content, title="AP360 | Ativar Convite")
-
-
+# =========================================================
+# DASHBOARD
+# =========================================================
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    html_content = f"""
-    <h2>Dashboard</h2>
+    ag = AgricultureQuote.query.filter_by(user_id=current_user.id).count()
+    av = Batch.query.filter_by(user_id=current_user.id, cadeia="avicultura").count()
+    su = Batch.query.filter_by(user_id=current_user.id, cadeia="suinocultura").count()
+    bo = Bovino.query.filter_by(user_id=current_user.id).count()
+
+    html_content = """
+    <section class="hero">
+      <h1 style="margin:0">Bem-vindo, <span class="welcome-name">{{ current_user.nome }}</span></h1>
+      <p class="muted">
+        Segmento principal: <b>{{ current_user.segmento|capitalize or "Não definido" }}</b>
+        {% if current_user.cooperativa %}
+          | Cooperativa: <b>{{ current_user.cooperativa }}</b>
+        {% else %}
+          | Cooperativa: <b>Indefinida</b>
+        {% endif %}
+      </p>
+    </section>
+
+    <div class="grid3">
+      <div class="card">
+        <div class="muted">Cotações agrícolas</div>
+        <div class="kpi">{{ ag }}</div>
+        <a class="btn btn-ghost" href="{{ url_for('agricultura') }}">Acessar</a>
+      </div>
+      <div class="card">
+        <div class="muted">Lotes avicultura</div>
+        <div class="kpi">{{ av }}</div>
+        <a class="btn btn-ghost" href="{{ url_for('avicultura') }}">Acessar</a>
+      </div>
+      <div class="card">
+        <div class="muted">Lotes suinocultura</div>
+        <div class="kpi">{{ su }}</div>
+        <a class="btn btn-ghost" href="{{ url_for('suinocultura') }}">Acessar</a>
+      </div>
+    </div>
     <div class="card">
-      <h3>Bem-vindo, <span class="welcome-name">{current_user.nome}</span>!</h3>
-      <p class="muted">Seu perfil: {current_user.perfil.capitalize()}</p>
-      <p class="muted">Seu segmento: {current_user.segmento.capitalize() if current_user.segmento else 'Não informado'}</p>
-      <p class="muted">Sua cooperativa: {current_user.cooperativa if current_user.cooperativa else 'Não informado'}</p>
+      <div class="muted">Bovinos cadastrados</div>
+      <div class="kpi">{{ bo }}</div>
+      <a class="btn btn-ghost" href="{{ url_for('bovinocultura') }}">Acessar</a>
     </div>
     """
-    return page(html_content, title="AP360 | Dashboard")
+    return page(html_content, title="AP360 | Dashboard", ag=ag, av=av, su=su, bo=bo)
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+@app.route("/admin", methods=["GET", "POST"])
+@login_required
+@admin_required
+def admin_panel():
+    if request.method == "POST":
+        form_type = request.form.get("form_type")
+
+        if form_type == "manual_invite":
+            email = request.form.get("email", "").strip().lower()
+            if not email:
+                flash("Informe um e-mail válido.")
+                return redirect(url_for("admin_panel"))
+
+            if AccessInvite.query.filter_by(email=email).first():
+                flash("Esse e-mail já possui convite.")
+                return redirect(url_for("admin_panel"))
+
+            token = secrets.token_urlsafe(24)
+            db.session.add(AccessInvite(email=email, token=token, status="convidado"))
+            db.session.commit()
+            flash(f"E-mail liberado: {email}")
+            flash(f"Link: {request.url_root.rstrip('/')}/ativar/{token}")
+            return redirect(url_for("admin_panel"))
+
+        if form_type == "approve_request":
+            req_id = int(request.form.get("request_id"))
+            req = AccessRequest.query.get_or_404(req_id)
+
+            if AccessInvite.query.filter_by(email=req.email).first():
+                flash("Esse e-mail já possui convite.")
+                return redirect(url_for("admin_panel"))
+
+            token = secrets.token_urlsafe(24)
+            inv = AccessInvite(email=req.email, token=token, status="convidado", request_id=req.id)
+            req.status = "liberado"
+            db.session.add(inv)
+            db.session.commit()
+            flash(f"Convite gerado para {req.email}")
+            flash(f"Link: {request.url_root.rstrip('/')}/ativar/{token}")
+            return redirect(url_for("admin_panel"))
+
+        if form_type == "benchmark":
+            cadeia = request.form.get("cadeia", "")
+            cooperativa = request.form.get("cooperativa", "").strip()
+            media_gpd = float(request.form.get("media_gpd", 0))
+            media_ca = float(request.form.get("media_ca", 0))
+            bonus_base = float(request.form.get("bonus_base", 1000))
+
+            row = CoopBenchmark.query.filter_by(cadeia=cadeia, cooperativa=cooperativa).first()
+            if not row:
+                row = CoopBenchmark(cadeia=cadeia, cooperativa=cooperativa)
+                db.session.add(row)
+
+            row.media_gpd = media_gpd
+            row.media_ca = media_ca
+            row.bonus_base = bonus_base
+            row.atualizado_em = datetime.utcnow()
+            db.session.commit()
+            flash("Benchmark salvo.")
+            return redirect(url_for("admin_panel"))
+
+    reqs = AccessRequest.query.order_by(AccessRequest.criado_em.desc()).limit(80).all()
+    invites = AccessInvite.query.order_by(AccessInvite.criado_em.desc()).limit(80).all()
+    users = User.query.filter(User.perfil != "admin").order_by(User.criado_em.desc()).limit(80).all() # Não mostra o admin aqui
+    benches = CoopBenchmark.query.order_by(CoopBenchmark.atualizado_em.desc()).all()
+
+    html_content = """
+    <h2>Admin</h2>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Liberar e-mail manual</h3>
+        <form method="post">
+          <input type="hidden" name="form_type" value="manual_invite">
+          <input type="email" name="email" placeholder="email@dominio.com" required>
+          <button class="btn btn-ok" type="submit">Liberar</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>Benchmark cooperativa</h3>
+        <form method="post">
+          <input type="hidden" name="form_type" value="benchmark">
+          <select name="cadeia" required>
+            <option value="avicultura" {% if cadeia == 'avicultura' %}selected{% endif %}>Avicultura</option>
+            <option value="suinocultura" {% if cadeia == 'suinocultura' %}selected{% endif %}>Suinocultura</option>
+          </select>
+          <input name="cooperativa" placeholder="Nome cooperativa" required>
+          <input type="number" step="0.0001" name="media_gpd" placeholder="Média GPD" required>
+          <input type="number" step="0.0001" name="media_ca" placeholder="Média CA" required>
+          <input type="number" step="0.01" name="bonus_base" placeholder="Base bônus R$" required>
+          <button class="btn btn-pri" type="submit">Salvar</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Solicitações</h3>
+      <table>
+        <tr><th>Data</th><th>Nome</th><th>Email</th><th>Segmento</th><th>Status</th><th>Ação</th></tr>
+        {% for r in reqs %}
+        <tr>
+          <td>{{ r.criado_em.strftime("%d/%m %H:%M") }}</td>
+          <td>{{ r.nome }}</td>
+          <td>{{ r.email }}</td>
+          <td>{{ r.segmento|capitalize }}</td>
+          <td>{{ r.status }}</td>
+          <td>
+            <form method="post" style="margin:0">
+              <input type="hidden" name="form_type" value="approve_request">
+              <input type="hidden" name="request_id" value="{{ r.id }}">
+              <button class="btn btn-ok" type="submit">Gerar convite</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Convites</h3>
+      <table>
+        <tr><th>Email</th><th>Status</th><th>Token</th></tr>
+        {% for i in invites %}
+          <tr><td>{{ i.email }}</td><td>{{ i.status }}</td><td>{{ i.token }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Usuários</h3>
+      <table>
+        <tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Status</th><th>Segmento</th><th>Cooperativa</th></tr>
+        {% for u in users %}
+          <tr>
+            <td>{{ u.nome }}</td>
+            <td>{{ u.email }}</td>
+            <td>{{ u.perfil }}</td>
+            <td>{{ u.status }}</td>
+            <td>{{ u.segmento|capitalize or '-' }}</td>
+            <td>{{ u.cooperativa or 'Indefinida' }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Benchmarks</h3>
+      <table>
+        <tr><th>Cadeia</th><th>Cooperativa</th><th>GPD</th><th>CA</th><th>Base bônus</th></tr>
+        {% for b in benches %}
+          <tr><td>{{ b.cadeia|capitalize }}</td><td>{{ b.cooperativa }}</td><td>{{ b.media_gpd }}</td><td>{{ b.media_ca }}</td><td>{{ b.bonus_base }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+    """
+    return page(html_content, title="AP360 | Admin", reqs=reqs, invites=invites, users=users, benches=benches)
 
 
 # =========================================================
@@ -719,357 +907,489 @@ def dashboard():
 @app.route("/agricultura", methods=["GET", "POST"])
 @login_required
 def agricultura():
+    resultado = None
+
     if request.method == "POST":
-        produto = request.form.get("produto", "").strip()
-        quantidade_ton = float(request.form.get("quantidade_ton", 0) or 0)
-        origem = request.form.get("origem", "").strip()
-        porto = request.form.get("porto", "").strip()
+        produto = request.form.get("produto", "soja").lower()
+        quantidade_ton = float(request.form.get("quantidade_ton", 0))
+        origem = request.form.get("origem", "")
+        porto = request.form.get("porto", "Paranaguá")
 
-        export_rs_ton, cbot_usd_bushel = cbot_para_rs_ton(produto)
-        usd_brl = fx_usd_brl()
-        frete_rs_ton = frete_medio(origem, porto)
-        liquido_rs_ton = export_rs_ton - frete_rs_ton
-        total_rs = liquido_rs_ton * quantidade_ton
+        preco_base_rs_ton, cbot_usd = cbot_para_rs_ton(produto)
+        premio_porto = 35.0 if porto in ["Paranaguá", "Santos"] else 28.0
+        preco_export = round(preco_base_rs_ton + premio_porto, 2)
+        frete = frete_medio(origem, porto)
+        liquido = round(preco_export - frete, 2)
+        total = round(liquido * quantidade_ton, 2)
 
-        new_quote = AgricultureQuote(
+        q = AgricultureQuote(
             user_id=current_user.id,
             produto=produto,
             quantidade_ton=quantidade_ton,
             origem=origem,
             porto=porto,
-            cbot_usd_bushel=cbot_usd_bushel,
-            usd_brl=usd_brl,
-            export_rs_ton=export_rs_ton,
-            frete_rs_ton=frete_rs_ton,
-            liquido_rs_ton=liquido_rs_ton,
-            total_rs=total_rs
+            cbot_usd_bushel=cbot_usd,
+            usd_brl=fx_usd_brl(),
+            export_rs_ton=preco_export,
+            frete_rs_ton=frete,
+            liquido_rs_ton=liquido,
+            total_rs=total
         )
-        db.session.add(new_quote)
+        db.session.add(q)
         db.session.commit()
-        flash("Cotação registrada com sucesso!")
-        return redirect(url_for("agricultura"))
+        resultado = q
 
-    latest_quotes = AgricultureQuote.query.filter_by(user_id=current_user.id).order_by(AgricultureQuote.criado_em.desc()).limit(10).all()
+    hist = AgricultureQuote.query.filter_by(user_id=current_user.id).order_by(AgricultureQuote.criado_em.desc()).limit(30).all()
 
     html_content = """
     <h2>Agricultura</h2>
-
-    <div class="card">
-      <h3>Nova Cotação</h3>
-      <form method="post">
-        <label>Produto</label>
-        <select name="produto">
-          <option value="soja">Soja</option>
-          <option value="milho">Milho</option>
-          <option value="trigo">Trigo</option>
-          <option value="aveia">Aveia</option>
-          <option value="arroz">Arroz</option>
-        </select>
-        <label>Quantidade (ton)</label>
-        <input type="number" step="0.01" name="quantidade_ton" required>
-        <label>Origem (Cidade-UF)</label>
-        <input name="origem" placeholder="Ex: Cascavel-PR" required>
-        <label>Porto</label>
-        <select name="porto">
-          <option value="Paranaguá">Paranaguá</option>
-          <option value="Santos">Santos</option>
-          <option value="Rio Grande">Rio Grande</option>
-          <option value="Itajaí">Itajaí</option>
-        </select>
-        <button class="btn btn-pri" type="submit">Calcular e Salvar</button>
-      </form>
+    <div class="grid">
+      <div class="card">
+        <form method="post">
+          <select name="produto" required>
+            <option value="soja">Soja</option>
+            <option value="milho">Milho</option>
+            <option value="trigo">Trigo</option>
+            <option value="aveia">Aveia</option>
+            <option value="arroz">Arroz</option>
+          </select>
+          <input type="number" step="0.01" name="quantidade_ton" placeholder="Quantidade (ton)" required>
+          <input name="origem" placeholder="Origem (ex.: Cascavel-PR)" required>
+          <select name="porto" required>
+            {% for p in portos %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+          </select>
+          <button class="btn btn-ok" type="submit">Calcular</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>Modelo</h3>
+        <p class="muted">Preço exportação = CBOT convertido + prêmio porto.</p>
+        <p class="muted">Líquido = exportação - frete médio.</p>
+      </div>
     </div>
 
+    {% if resultado %}
     <div class="card">
-      <h3>Últimas Cotações</h3>
-      <table>
-        <tr><th>Produto</th><th>Origem</th><th>Porto</th><th>Líquido R$/ton</th><th>Total R$</th><th>Data</th></tr>
-        {% for quote in latest_quotes %}
-          <tr>
-            <td>{{ quote.produto|capitalize }}</td>
-            <td>{{ quote.origem }}</td>
-            <td>{{ quote.porto }}</td>
-            <td>{{ "%.2f"|format(quote.liquido_rs_ton) }}</td>
-            <td>{{ "%.2f"|format(quote.total_rs) }}</td>
-            <td>{{ quote.criado_em.strftime("%d/%m %H:%M") }}</td>
-          </tr>
-        {% endfor %}
-      </table>
+      <h3>Resultado</h3>
+      <div class="grid3">
+        <div><div class="muted">CBOT</div><div class="kpi">{{ resultado.cbot_usd_bushel }} USD/bushel</div></div>
+        <div><div class="muted">USD/BRL</div><div class="kpi">{{ resultado.usd_brl }}</div></div>
+        <div><div class="muted">Exportação</div><div class="kpi">R$ {{ resultado.export_rs_ton }}/ton</div></div>
+      </div>
+      <div class="grid3">
+        <div><div class="muted">Frete</div><div class="kpi">R$ {{ resultado.frete_rs_ton }}/ton</div></div>
+        <div><div class="muted">Líquido</div><div class="kpi">R$ {{ resultado.liquido_rs_ton }}/ton</div></div>
+        <div><div class="muted">Total</div><div class="kpi">R$ {{ resultado.total_rs }}</div></div>
+      </div>
     </div>
-    """
-    return page(html_content, title="AP360 | Agricultura", latest_quotes=latest_quotes)
-
-
-# =========================================================
-# AVICULTURA E SUINOCULTURA (MÓDULO DE LOTES)
-# =========================================================
-def modulo_lotes(cadeia: str):
-    if request.method == "POST":
-        form_type = request.form.get("form_type")
-
-        if form_type == "novo_lote":
-            estrutura = request.form.get("estrutura", "").strip()
-            lote_nome = request.form.get("lote", "").strip()
-
-            if Batch.query.filter_by(user_id=current_user.id, cadeia=cadeia, estrutura=estrutura, lote=lote_nome).first():
-                flash(f"Já existe um lote '{lote_nome}' na estrutura '{estrutura}' para {cadeia}.")
-                return redirect(url_for(cadeia))
-
-            peso_inicial = float(request.form.get("peso_inicial", 0) or 0)
-            peso_final = float(request.form.get("peso_final", 0) or 0)
-            dias = int(request.form.get("dias", 0) or 0)
-            racao_total_kg = float(request.form.get("racao_total_kg", 0) or 0)
-            animais_iniciais = int(request.form.get("animais_iniciais", 0) or 0)
-            animais_final = int(request.form.get("animais_final", 0) or 0)
-
-            gpd = calc_gpd(peso_inicial, peso_final, dias)
-            ca = calc_ca(racao_total_kg, peso_inicial, peso_final)
-            viabilidade_pct = calc_viabilidade(animais_iniciais, animais_final)
-            mortalidade_pct = calc_mortalidade(animais_iniciais, animais_final)
-
-            coop_media_gpd, coop_media_ca, bonus_base = get_benchmark(cadeia, current_user)
-
-            ca_ajustada = ca
-            iep = 0.0
-            indice_lote = 0.0
-            bonificacao = 0.0
-            bonus_tipificacao = 0.0
-
-            if cadeia == "avicultura":
-                peso_meta_coop = float(request.form.get("peso_meta_coop", 0) or 0)
-                idade_meta_coop = int(request.form.get("idade_meta_coop", 0) or 0)
-                fator_peso_caa = float(request.form.get("fator_peso_caa", 0.30) or 0.30)
-                fator_idade_caa = float(request.form.get("fator_idade_caa", 0.01) or 0.01)
-                ca_ajustada = calc_ca_ajustada_avicultura(ca, peso_final, dias,
-                                                           peso_meta_coop, idade_meta_coop,
-                                                           fator_peso_caa, fator_idade_caa)
-                iep = calc_iep_avicultura(viabilidade_pct, peso_final, dias, ca_ajustada)
-                bonificacao = calc_bonificacao(gpd, ca_ajustada, coop_media_gpd, coop_media_ca, bonus_base)
-            elif cadeia == "suinocultura":
-                peso_vivo_medio = float(request.form.get("peso_vivo_medio", 0) or 0)
-                peso_carcaca_medio = float(request.form.get("peso_carcaca_medio", 0) or 0)
-                carne_magra_pct = float(request.form.get("carne_magra_pct", 0) or 0)
-                rendimento_carcaca_pct = calc_rendimento_carcaca(peso_vivo_medio, peso_carcaca_medio)
-                bonus_tipificacao = calc_bonus_tipificacao(carne_magra_pct, rendimento_carcaca_pct)
-                indice_lote = calc_indice_lote_suino(gpd, viabilidade_pct, ca_ajustada)
-                bonificacao = calc_bonificacao(gpd, ca_ajustada, coop_media_gpd, coop_media_ca, bonus_base) + bonus_tipificacao
-
-            new_batch = Batch(
-                user_id=current_user.id,
-                cadeia=cadeia,
-                estrutura=estrutura,
-                lote=lote_nome,
-                peso_inicial=peso_inicial,
-                peso_final=peso_final,
-                dias=dias,
-                racao_total_kg=racao_total_kg,
-                animais_iniciais=animais_iniciais,
-                animais_final=animais_final,
-                viabilidade_pct=viabilidade_pct,
-                mortalidade_pct=mortalidade_pct,
-                gpd=gpd,
-                ca=ca,
-                ca_ajustada=ca_ajustada,
-                iep=iep,
-                indice_lote=indice_lote,
-                bonificacao=bonificacao,
-                coop_media_gpd=coop_media_gpd,
-                coop_media_ca=coop_media_ca,
-                ca_coop_ref=float(request.form.get("ca_coop_ref", 0) or 0),
-                gpd_coop_ref=float(request.form.get("gpd_coop_ref", 0) or 0),
-                peso_meta_coop=float(request.form.get("peso_meta_coop", 0) or 0),
-                idade_meta_coop=int(request.form.get("idade_meta_coop", 0) or 0),
-                fator_peso_caa=float(request.form.get("fator_peso_caa", 0.30) or 0.30),
-                fator_idade_caa=float(request.form.get("fator_idade_caa", 0.01) or 0.01),
-                peso_vivo_medio=float(request.form.get("peso_vivo_medio", 0) or 0),
-                peso_carcaca_medio=float(request.form.get("peso_carcaca_medio", 0) or 0),
-                rendimento_carcaca_pct=rendimento_carcaca_pct,
-                carne_magra_pct=float(request.form.get("carne_magra_pct", 0) or 0),
-                bonus_tipificacao=bonus_tipificacao
-            )
-            db.session.add(new_batch)
-            db.session.commit()
-            flash(f"Lote de {cadeia} registrado com sucesso!")
-            return redirect(url_for(cadeia))
-
-        if form_type == "atualizar_benchmark_pessoal":
-            if cadeia == "avicultura":
-                current_user.gpd_produtor_avicultura = float(request.form.get("gpd_produtor_avicultura", 0) or 0)
-                current_user.ca_produtor_avicultura = float(request.form.get("ca_produtor_avicultura", 0) or 0)
-            elif cadeia == "suinocultura":
-                current_user.gpd_produtor_suinocultura = float(request.form.get("gpd_produtor_suinocultura", 0) or 0)
-                current_user.ca_produtor_suinocultura = float(request.form.get("ca_produtor_suinocultura", 0) or 0)
-            db.session.commit()
-            flash("Benchmark pessoal atualizado!")
-            return redirect(url_for(cadeia))
-
-    hist = Batch.query.filter_by(user_id=current_user.id, cadeia=cadeia).order_by(Batch.criado_em.desc()).all()
-
-    # Lógica de comparação de lotes
-    c1_id = request.args.get("c1", type=int)
-    c2_id = request.args.get("c2", type=int)
-    compare_data = None
-    if c1_id and c2_id:
-        lote_a = Batch.query.get(c1_id)
-        lote_b = Batch.query.get(c2_id)
-        if lote_a and lote_b and lote_a.user_id == current_user.id and lote_b.user_id == current_user.id:
-            labels = ["GPD", "CA", "Viabilidade%", "Mortalidade%", "Bonificação"]
-            a_vals = [lote_a.gpd, lote_a.ca, lote_a.viabilidade_pct, lote_a.mortalidade_pct, lote_a.bonificacao]
-            b_vals = [lote_b.gpd, lote_b.ca, lote_b.viabilidade_pct, lote_b.mortalidade_pct, lote_b.bonificacao]
-            if cadeia == "avicultura":
-                labels.append("IEP")
-                a_vals.append(lote_a.iep)
-                b_vals.append(lote_b.iep)
-            elif cadeia == "suinocultura":
-                labels.append("Índice Lote")
-                a_vals.append(lote_a.indice_lote)
-                b_vals.append(lote_b.indice_lote)
-
-            compare_data = {
-                "labels": labels,
-                "a_name": f"{lote_a.estrutura}/{lote_a.lote}",
-                "a_vals": a_vals,
-                "b_name": f"{lote_b.estrutura}/{lote_b.lote}",
-                "b_vals": b_vals,
-            }
-
-    html_content = """
-    <h2>""" + cadeia.capitalize() + """</h2>
+    {% endif %}
 
     <div class="card">
-      <h3>Novo Lote</h3>
-      <form method="post">
-        <input type="hidden" name="form_type" value="novo_lote">
-        <label>Estrutura</label>
-        <input name="estrutura" placeholder="Ex: Galpão 1, Baia 3" required>
-        <label>Lote</label>
-        <input name="lote" placeholder="Ex: Lote 2024-01" required>
-        <label>Peso inicial (kg)</label>
-        <input type="number" step="0.0001" name="peso_inicial" required>
-        <label>Peso final (kg)</label>
-        <input type="number" step="0.0001" name="peso_final" required>
-        <label>Dias de alojamento</label>
-        <input type="number" name="dias" required>
-        <label>Ração total (kg)</label>
-        <input type="number" step="0.0001" name="racao_total_kg" required>
-        <label>Animais iniciais</label>
-        <input type="number" name="animais_iniciais" required>
-        <label>Animais finais (abatidos/vendidos)</label>
-        <input type="number" name="animais_final" required>
-
-        <h4>Benchmark Pessoal (opcional, prioridade sobre cooperativa)</h4>
-        {% if cadeia == 'avicultura' %}
-          <label>Seu GPD médio ideal (Avicultura)</label>
-          <input type="number" step="0.0001" name="gpd_produtor_avicultura" value="{{ current_user.gpd_produtor_avicultura if current_user.gpd_produtor_avicultura > 0 else '' }}">
-          <label>Sua CA média ideal (Avicultura)</label>
-          <input type="number" step="0.0001" name="ca_produtor_avicultura" value="{{ current_user.ca_produtor_avicultura if current_user.ca_produtor_avicultura > 0 else '' }}">
-        {% elif cadeia == 'suinocultura' %}
-          <label>Seu GPD médio ideal (Suinocultura)</label>
-          <input type="number" step="0.0001" name="gpd_produtor_suinocultura" value="{{ current_user.gpd_produtor_suinocultura if current_user.gpd_produtor_suinocultura > 0 else '' }}">
-          <label>Sua CA média ideal (Suinocultura)</label>
-          <input type="number" step="0.0001" name="ca_produtor_suinocultura" value="{{ current_user.ca_produtor_suinocultura if current_user.ca_produtor_suinocultura > 0 else '' }}">
-        {% endif %}
-        <button class="btn btn-ghost" type="submit" name="form_type" value="atualizar_benchmark_pessoal">Atualizar Benchmark Pessoal</button>
-
-        <h4>Referência cooperativa (informada pelo produtor)</h4>
-        <label>GPD médio cooperativa (opcional)</label>
-        <input type="number" step="0.0001" name="gpd_coop_ref">
-        <label>CA média cooperativa (opcional)</label>
-        <input type="number" step="0.0001" name="ca_coop_ref">
-
-        {% if cadeia == 'avicultura' %}
-          <h4>Parâmetros CAA (Avicultura)</h4>
-          <label>Peso meta coop (kg)</label>
-          <input type="number" step="0.0001" name="peso_meta_coop" required>
-          <label>Idade meta coop (dias)</label>
-          <input type="number" name="idade_meta_coop" required>
-          <label>Fator peso CAA</label>
-          <input type="number" step="0.0001" name="fator_peso_caa" value="0.30">
-          <label>Fator idade CAA</label>
-          <input type="number" step="0.0001" name="fator_idade_caa" value="0.01">
-        {% endif %}
-
-        {% if cadeia == 'suinocultura' %}
-          <h4>Carcaça e tipificação (Suínos)</h4>
-          <label>Peso vivo médio (kg/cab)</label>
-          <input type="number" step="0.01" name="peso_vivo_medio" required>
-          <label>Peso carcaça médio (kg/cab)</label>
-          <input type="number" step="0.01" name="peso_carcaca_medio" required>
-          <label>% carne magra</label>
-          <input type="number" step="0.01" name="carne_magra_pct" required>
-        {% endif %}
-
-        <button class="btn btn-ok" type="submit">Salvar Lote</button>
-      </form>
-    </div>
-
-    <div class="card">
-      <h3>Histórico de Lotes</h3>
+      <h3>Histórico</h3>
+      <a class="btn btn-ghost" href="{{ url_for('export_agricultura_csv') }}">Exportar CSV</a>
       <table>
         <tr>
-          <th>Estrutura/Lote</th>
-          <th>GPD</th>
-          <th>CA</th>
-          <th>Viabilidade%</th>
-          <th>Mortalidade%</th>
-          {% if cadeia == 'avicultura' %}
-            <th>IEP</th>
-          {% elif cadeia == 'suinocultura' %}
-            <th>Índice Lote</th>
-          {% endif %}
-          <th>Bonificação R$</th>
-          <th>Data</th>
+          <th>Data</th><th>Produto</th><th>Origem</th><th>Porto</th><th>Líquido R$/ton</th><th>Total R$</th>
           <th>Ações</th>
         </tr>
-        {% for b in hist %}
+        {% for h in hist %}
           <tr>
-            <td>{{ b.estrutura }}/{{ b.lote }}</td>
-            <td>{{ "%.4f"|format(b.gpd) }}</td>
-            <td>{{ "%.4f"|format(b.ca) }}</td>
-            <td>{{ "%.2f"|format(b.viabilidade_pct) }}</td>
-            <td>{{ "%.2f"|format(b.mortalidade_pct) }}</td>
-            {% if cadeia == 'avicultura' %}
-              <td>{{ "%.2f"|format(b.iep) }}</td>
-            {% elif cadeia == 'suinocultura' %}
-              <td>{{ "%.2f"|format(b.indice_lote) }}</td>
-            {% endif %}
-            <td>{{ "%.2f"|format(b.bonificacao) }}</td>
-            <td>{{ b.criado_em.strftime("%d/%m %H:%M") }}</td>
+            <td>{{ h.criado_em.strftime("%d/%m %H:%M") }}</td>
+            <td>{{ h.produto|capitalize }}</td>
+            <td>{{ h.origem }}</td>
+            <td>{{ h.porto }}</td>
+            <td>{{ h.liquido_rs_ton }}</td>
+            <td>{{ h.total_rs }}</td>
             <td>
-              <a class="btn btn-ghost" href="{{ url_for('editar_lote', cadeia=cadeia, batch_id=b.id) }}">Editar</a>
-              <form method="post" action="{{ url_for('excluir_lote', cadeia=cadeia, batch_id=b.id) }}" style="display:inline;">
-                <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este lote?');">Excluir</button>
+              <a class="btn btn-ghost" href="{{ url_for('editar_agricultura', quote_id=h.id) }}">Editar</a>
+              <form method="post" action="{{ url_for('excluir_agricultura', quote_id=h.id) }}" style="display:inline;">
+                <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir esta cotação?');">Excluir</button>
               </form>
-              <a class="btn btn-ghost" href="{{ url_for(cadeia, c1=b.id, c2=request.args.get('c2')) }}">Comparar A</a>
-              <a class="btn btn-ghost" href="{{ url_for(cadeia, c1=request.args.get('c1'), c2=b.id) }}">Comparar B</a>
             </td>
           </tr>
         {% endfor %}
       </table>
     </div>
+    """
+    return page(html_content, title="AP360 | Agricultura", portos=PORTOS, resultado=resultado, hist=hist)
 
-    {% if compare_data %}
+
+@app.route("/agricultura/export.csv")
+@login_required
+def export_agricultura_csv():
+    rows = AgricultureQuote.query.filter_by(user_id=current_user.id).order_by(AgricultureQuote.criado_em.desc()).all()
+    output = io.StringIO()
+    w = csv.writer(output)
+    w.writerow(["data", "produto", "origem", "porto", "cbot", "usd_brl", "export_rs_ton", "frete_rs_ton", "liquido_rs_ton", "total_rs"])
+    for r in rows:
+        w.writerow([
+            r.criado_em.isoformat(), r.produto, r.origem, r.porto, r.cbot_usd_bushel,
+            r.usd_brl, r.export_rs_ton, r.frete_rs_ton, r.liquido_rs_ton, r.total_rs
+        ])
+    return Response(output.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=agricultura.csv"})
+
+
+@app.route("/agricultura/editar/<int:quote_id>", methods=["GET", "POST"])
+@login_required
+def editar_agricultura(quote_id):
+    quote = AgricultureQuote.query.filter_by(id=quote_id, user_id=current_user.id).first_or_404()
+
+    if request.method == "POST":
+        quote.produto = request.form.get("produto", "").lower()
+        quote.quantidade_ton = float(request.form.get("quantidade_ton", 0))
+        quote.origem = request.form.get("origem", "")
+        quote.porto = request.form.get("porto", "")
+
+        # Recalcula os valores
+        preco_base_rs_ton, cbot_usd = cbot_para_rs_ton(quote.produto)
+        premio_porto = 35.0 if quote.porto in ["Paranaguá", "Santos"] else 28.0
+        quote.export_rs_ton = round(preco_base_rs_ton + premio_porto, 2)
+        quote.frete_rs_ton = frete_medio(quote.origem, quote.porto)
+        quote.liquido_rs_ton = round(quote.export_rs_ton - quote.frete_rs_ton, 2)
+        quote.total_rs = round(quote.liquido_rs_ton * quote.quantidade_ton, 2)
+        quote.cbot_usd_bushel = cbot_usd
+        quote.usd_brl = fx_usd_brl()
+
+        db.session.commit()
+        flash("Cotação agrícola atualizada com sucesso!")
+        return redirect(url_for("agricultura"))
+
+    html_content = """
+    <h2>Editar Cotação Agrícola</h2>
+    <div class="card" style="max-width:700px;margin:0 auto">
+      <form method="post">
+        <label>Produto</label>
+        <select name="produto" required>
+          <option value="soja" {% if quote.produto == 'soja' %}selected{% endif %}>Soja</option>
+          <option value="milho" {% if quote.produto == 'milho' %}selected{% endif %}>Milho</option>
+          <option value="trigo" {% if quote.produto == 'trigo' %}selected{% endif %}>Trigo</option>
+          <option value="aveia" {% if quote.produto == 'aveia' %}selected{% endif %}>Aveia</option>
+          <option value="arroz" {% if quote.produto == 'arroz' %}selected{% endif %}>Arroz</option>
+        </select>
+        <label>Quantidade (ton)</label>
+        <input type="number" step="0.01" name="quantidade_ton" value="{{ quote.quantidade_ton }}" required>
+        <label>Origem (ex.: Cascavel-PR)</label>
+        <input name="origem" value="{{ quote.origem }}" required>
+        <label>Porto</label>
+        <select name="porto" required>
+          {% for p in portos %}
+            <option value="{{ p }}" {% if quote.porto == p %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn-ok" type="submit">Salvar Alterações</button>
+        <a class="btn btn-ghost" href="{{ url_for('agricultura') }}">Cancelar</a>
+      </form>
+    </div>
+    """
+    return page(html_content, title="AP360 | Editar Cotação", quote=quote, portos=PORTOS)
+
+
+@app.route("/agricultura/excluir/<int:quote_id>", methods=["POST"])
+@login_required
+def excluir_agricultura(quote_id):
+    quote = AgricultureQuote.query.filter_by(id=quote_id, user_id=current_user.id).first_or_404()
+    db.session.delete(quote)
+    db.session.commit()
+    flash("Cotação agrícola excluída com sucesso!")
+    return redirect(url_for("agricultura"))
+
+
+# =========================================================
+# AVICULTURA / SUINOCULTURA
+# =========================================================
+def modulo_lotes(cadeia):
+    resultado = None
+    compare_data = None
+
+    if request.method == "POST":
+        estrutura = request.form.get("estrutura", "").strip()
+        lote = request.form.get("lote", "").strip()
+
+        peso_i = float(request.form.get("peso_inicial", 0))
+        peso_f = float(request.form.get("peso_final", 0))
+        dias = int(request.form.get("dias", 0))
+        racao = float(request.form.get("racao_total_kg", 0))
+
+        animais_iniciais = int(request.form.get("animais_iniciais", 0) or 0)
+        animais_final = int(request.form.get("animais_final", 0) or 0)
+
+        # benchmark base do admin
+        meta_gpd_db, meta_ca_db, bonus_base = get_benchmark(cadeia, current_user.cooperativa)
+
+        # referência manual informada pelo produtor (opcional)
+        ca_coop_ref = float(request.form.get("ca_coop_ref", 0) or 0)
+        gpd_coop_ref = float(request.form.get("gpd_coop_ref", 0) or 0)
+
+        meta_ca = ca_coop_ref if ca_coop_ref > 0 else meta_ca_db
+        meta_gpd = gpd_coop_ref if gpd_coop_ref > 0 else meta_gpd_db
+
+        gpd = calc_gpd(peso_i, peso_f, dias)
+        ca = calc_ca(racao, peso_i, peso_f)
+
+        viabilidade = calc_viabilidade(animais_iniciais, animais_final)
+        mortalidade = calc_mortalidade(animais_iniciais, animais_final)
+
+        # defaults
+        ca_ajustada = ca
+        iep = 0.0
+        indice_lote = 0.0
+        peso_vivo_medio = 0.0
+        peso_carcaca_medio = 0.0
+        rendimento_carcaca_pct = 0.0
+        carne_magra_pct = 0.0
+        bonus_tipificacao = 0.0
+
+        # avicultura: CAA + IEP
+        peso_meta = float(request.form.get("peso_meta_coop", 0) or 0)
+        idade_meta = int(request.form.get("idade_meta_coop", 0) or 0)
+        fator_peso = float(request.form.get("fator_peso_caa", 0.30) or 0.30)
+        fator_idade = float(request.form.get("fator_idade_caa", 0.01) or 0.01)
+
+        if cadeia == "avicultura":
+            if peso_meta > 0 and idade_meta > 0:
+                ca_ajustada = calc_ca_ajustada_avicultura(
+                    ca_observada=ca,
+                    peso_real=peso_f,
+                    idade_real=dias,
+                    peso_meta=peso_meta,
+                    idade_meta=idade_meta,
+                    fator_peso=fator_peso,
+                    fator_idade=fator_idade
+                )
+            iep = calc_iep_avicultura(viabilidade, peso_f, dias, ca_ajustada)
+
+        # suínos: carcaça, tipificação, índice
+        if cadeia == "suinocultura":
+            peso_vivo_medio = float(request.form.get("peso_vivo_medio", 0) or 0)
+            peso_carcaca_medio = float(request.form.get("peso_carcaca_medio", 0) or 0)
+            carne_magra_pct = float(request.form.get("carne_magra_pct", 0) or 0)
+
+            rendimento_carcaca_pct = calc_rendimento_carcaca(peso_vivo_medio, peso_carcaca_medio)
+
+            # ajuste leve CA suína por peso de abate (referência 120kg)
+            if peso_vivo_medio > 0:
+                ajuste_peso = 0.003 * (peso_vivo_medio - 120.0)
+                ca_ajustada = round(max(ca + ajuste_peso, 0.01), 4)
+
+            indice_lote = calc_indice_lote_suino(gpd, viabilidade, ca_ajustada)
+            bonus_tipificacao = calc_bonus_tipificacao(carne_magra_pct, rendimento_carcaca_pct)
+
+        bon = calc_bonificacao(gpd, ca_ajustada, meta_gpd, meta_ca, bonus_base)
+        bon_total = round(bon + bonus_tipificacao, 2)
+
+        b = Batch(
+            user_id=current_user.id,
+            cadeia=cadeia,
+            estrutura=estrutura,
+            lote=lote,
+            peso_inicial=peso_i,
+            peso_final=peso_f,
+            dias=dias,
+            racao_total_kg=racao,
+            animais_iniciais=animais_iniciais,
+            animais_final=animais_final,
+            viabilidade_pct=viabilidade,
+            mortalidade_pct=mortalidade,
+            gpd=gpd,
+            ca=ca,
+            ca_ajustada=ca_ajustada,
+            ca_coop_ref=ca_coop_ref,
+            gpd_coop_ref=gpd_coop_ref,
+            peso_meta_coop=peso_meta,
+            idade_meta_coop=idade_meta,
+            fator_peso_caa=fator_peso,
+            fator_idade_caa=fator_idade,
+            iep=iep,
+            indice_lote=indice_lote,
+            peso_vivo_medio=peso_vivo_medio,
+            peso_carcaca_medio=peso_carcaca_medio,
+            rendimento_carcaca_pct=rendimento_carcaca_pct,
+            carne_magra_pct=carne_magra_pct,
+            bonus_tipificacao=bonus_tipificacao,
+            bonificacao=bon_total,
+            coop_media_gpd=meta_gpd,
+            coop_media_ca=meta_ca
+        )
+        db.session.add(b)
+        db.session.commit()
+        resultado = b
+
+    hist = Batch.query.filter_by(user_id=current_user.id, cadeia=cadeia).order_by(Batch.criado_em.desc()).all()
+
+    c1 = request.args.get("c1", type=int)
+    c2 = request.args.get("c2", type=int)
+    if c1 and c2:
+        b1 = Batch.query.filter_by(id=c1, user_id=current_user.id, cadeia=cadeia).first()
+        b2 = Batch.query.filter_by(id=c2, user_id=current_user.id, cadeia=cadeia).first()
+        if b1 and b2:
+            compare_data = {
+                "labels": ["GPD", "CA", "CA Ajustada", "Bonificação"],
+                "a_name": f"Estr {b1.estrutura}/Lote {b1.lote}",
+                "b_name": f"Estr {b2.estrutura}/Lote {b2.lote}",
+                "a_vals": [b1.gpd, b1.ca, b1.ca_ajustada, b1.bonificacao],
+                "b_vals": [b2.gpd, b2.ca, b2.ca_ajustada, b2.bonificacao]
+            }
+
+    html_content = """
+    <h2>{{ cadeia|capitalize }}</h2>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Novo lote</h3>
+        <form method="post">
+          <input name="estrutura" placeholder="Número da estrutura" required>
+          <input name="lote" placeholder="Número do lote" required>
+          <input type="number" step="0.0001" name="peso_inicial" placeholder="Peso inicial (kg)" required>
+          <input type="number" step="0.0001" name="peso_final" placeholder="Peso final (kg)" required>
+          <input type="number" name="dias" placeholder="Dias de alojamento" required>
+          <input type="number" step="0.0001" name="racao_total_kg" placeholder="Ração total (kg)" required>
+          <input type="number" name="animais_iniciais" placeholder="Animais iniciais" required>
+          <input type="number" name="animais_final" placeholder="Animais finais (abatidos/vendidos)" required>
+
+          <h4>Referência cooperativa (informada pelo produtor)</h4>
+          <input type="number" step="0.0001" name="gpd_coop_ref" placeholder="GPD médio coop (opcional)">
+          <input type="number" step="0.0001" name="ca_coop_ref" placeholder="CA média coop (opcional)">
+
+          {% if cadeia == 'avicultura' %}
+            <h4>CA Ajustada (Avicultura)</h4>
+            <input type="number" step="0.0001" name="peso_meta_coop" placeholder="Peso meta coop (kg), ex: 2.90" required>
+            <input type="number" name="idade_meta_coop" placeholder="Idade meta coop (dias), ex: 42" required>
+            <input type="number" step="0.0001" name="fator_peso_caa" value="0.30" placeholder="Fator peso CAA">
+            <input type="number" step="0.0001" name="fator_idade_caa" value="0.01" placeholder="Fator idade CAA">
+          {% endif %}
+
+          {% if cadeia == 'suinocultura' %}
+            <h4>Carcaça e tipificação (Suínos)</h4>
+            <input type="number" step="0.01" name="peso_vivo_medio" placeholder="Peso vivo médio (kg/cab)" required>
+            <input type="number" step="0.01" name="peso_carcaca_medio" placeholder="Peso carcaça médio (kg/cab)" required>
+            <input type="number" step="0.01" name="carne_magra_pct" placeholder="% carne magra (ex: 57.5)" required>
+          {% endif %}
+
+          <button class="btn btn-ok" type="submit">Calcular e salvar</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Métricas calculadas</h3>
+        <p class="muted">GPD, CA, CAA, viabilidade, mortalidade e bônus.</p>
+        <p class="muted">Avicultura: IEP/EPEF.</p>
+        <p class="muted">Suínos: rendimento de carcaça, índice de lote e bônus de tipificação.</p>
+      </div>
+    </div>
+
+    {% if resultado %}
+      <div class="card">
+        <h3>Resultado do lote</h3>
+        <div class="grid3">
+          <div><div class="muted">GPD</div><div class="kpi">{{ resultado.gpd }}</div></div>
+          <div><div class="muted">CA</div><div class="kpi">{{ resultado.ca }}</div></div>
+          <div><div class="muted">CA Ajustada</div><div class="kpi">{{ resultado.ca_ajustada }}</div></div>
+        </div>
+        <div class="grid3">
+          <div><div class="muted">Viabilidade</div><div class="kpi">{{ resultado.viabilidade_pct }}%</div></div>
+          <div><div class="muted">Mortalidade</div><div class="kpi">{{ resultado.mortalidade_pct }}%</div></div>
+          <div><div class="muted">Bônus total</div><div class="kpi">R$ {{ resultado.bonificacao }}</div></div>
+        </div>
+
+        {% if cadeia == 'avicultura' %}
+        <div class="grid3">
+          <div><div class="muted">IEP/EPEF</div><div class="kpi">{{ resultado.iep }}</div></div>
+          <div><div class="muted">Peso meta</div><div class="kpi">{{ resultado.peso_meta_coop }}</div></div>
+          <div><div class="muted">Idade meta</div><div class="kpi">{{ resultado.idade_meta_coop }}</div></div>
+        </div>
+        {% endif %}
+
+        {% if cadeia == 'suinocultura' %}
+        <div class="grid3">
+          <div><div class="muted">Rendimento carcaça</div><div class="kpi">{{ resultado.rendimento_carcaca_pct }}%</div></div>
+          <div><div class="muted">% carne magra</div><div class="kpi">{{ resultado.carne_magra_pct }}%</div></div>
+          <div><div class="muted">Bônus tipificação</div><div class="kpi">R$ {{ resultado.bonus_tipificacao }}</div></div>
+        </div>
+        <div class="grid3">
+          <div><div class="muted">Índice lote</div><div class="kpi">{{ resultado.indice_lote }}</div></div>
+          <div><div class="muted">Peso vivo médio</div><div class="kpi">{{ resultado.peso_vivo_medio }}</div></div>
+          <div><div class="muted">Peso carcaça médio</div><div class="kpi">{{ resultado.peso_carcaca_medio }}</div></div>
+        </div>
+        {% endif %}
+      </div>
+    {% endif %}
+
     <div class="card">
-      <h3>Comparativo de Lotes</h3>
-      <canvas id="compareChart" height="90"></canvas>
+      <h3>Comparar dois lotes</h3>
+      <form method="get" class="grid">
+        <div>
+          <label>Lote A</label>
+          <select name="c1" required>
+            {% for h in hist %}
+              <option value="{{ h.id }}" {% if c1 == h.id %}selected{% endif %}>{{ h.estrutura }} / {{ h.lote }} ({{ h.criado_em.strftime("%d/%m") }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>Lote B</label>
+          <select name="c2" required>
+            {% for h in hist %}
+              <option value="{{ h.id }}" {% if c2 == h.id %}selected{% endif %}>{{ h.estrutura }} / {{ h.lote }} ({{ h.criado_em.strftime("%d/%m") }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button class="btn btn-pri" type="submit">Comparar</button>
+      </form>
+
+      {% if compare_data %}
+      <canvas id="cmpChart" height="90"></canvas>
       <script>
-        const compareData = {{ compare_data | tojson }};
-        new Chart(document.getElementById("compareChart"), {
+        const cmp = {{ compare_data | tojson }};
+        new Chart(document.getElementById("cmpChart"), {
           type: "bar",
           data: {
-            labels: compareData.labels,
+            labels: cmp.labels,
             datasets: [
-              { label: compareData.a_name, data: compareData.a_vals, backgroundColor: 'rgba(59, 185, 255, 0.6)' },
-              { label: compareData.b_name, data: compareData.b_vals, backgroundColor: 'rgba(70, 221, 152, 0.6)' }
+              { label: cmp.a_name, data: cmp.a_vals },
+              { label: cmp.b_name, data: cmp.b_vals }
             ]
           },
-          options: { responsive: true, scales: { y: { beginAtZero: true } } }
+          options: { responsive: true }
         });
       </script>
+      {% endif %}
     </div>
-    {% endif %}
+
+    <div class="card">
+      <h3>Histórico</h3>
+      <table>
+        <tr>
+          <th>Data</th><th>Estrutura</th><th>Lote</th><th>GPD</th><th>CA</th><th>CAA</th>
+          <th>Viab%</th><th>Mort%</th><th>IEP/Índice</th><th>Rend. Carcaça%</th><th>Bônus</th>
+          <th>Ações</th>
+        </tr>
+        {% for h in hist %}
+        <tr>
+          <td>{{ h.criado_em.strftime("%d/%m %H:%M") }}</td>
+          <td>{{ h.estrutura }}</td>
+          <td>{{ h.lote }}</td>
+          <td>{{ h.gpd }}</td>
+          <td>{{ h.ca }}</td>
+          <td>{{ h.ca_ajustada }}</td>
+          <td>{{ h.viabilidade_pct }}</td>
+          <td>{{ h.mortalidade_pct }}</td>
+          <td>{% if cadeia == 'avicultura' %}{{ h.iep }}{% else %}{{ h.indice_lote }}{% endif %}</td>
+          <td>{{ h.rendimento_carcaca_pct }}</td>
+          <td>R$ {{ h.bonificacao }}</td>
+          <td>
+            <a class="btn btn-ghost" href="{{ url_for('editar_lote', cadeia=cadeia, batch_id=h.id) }}">Editar</a>
+            <form method="post" action="{{ url_for('excluir_lote', cadeia=cadeia, batch_id=h.id) }}" style="display:inline;">
+              <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este lote?');">Excluir</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
     """
-    return page(html_content, title=f"AP360 | {cadeia.capitalize()}", hist=hist, cadeia=cadeia, compare_data=compare_data)
+    return page(html_content, title=f"AP360 | {cadeia.capitalize()}",
+                cadeia=cadeia, resultado=resultado, hist=hist, compare_data=compare_data, c1=c1, c2=c2)
 
 
 @app.route("/avicultura", methods=["GET", "POST"])
@@ -1092,49 +1412,79 @@ def editar_lote(cadeia, batch_id):
     if request.method == "POST":
         batch.estrutura = request.form.get("estrutura", "").strip()
         batch.lote = request.form.get("lote", "").strip()
-        batch.peso_inicial = float(request.form.get("peso_inicial", 0) or 0)
-        batch.peso_final = float(request.form.get("peso_final", 0) or 0)
-        batch.dias = int(request.form.get("dias", 0) or 0)
-        batch.racao_total_kg = float(request.form.get("racao_total_kg", 0) or 0)
+        batch.peso_inicial = float(request.form.get("peso_inicial", 0))
+        batch.peso_final = float(request.form.get("peso_final", 0))
+        batch.dias = int(request.form.get("dias", 0))
+        batch.racao_total_kg = float(request.form.get("racao_total_kg", 0))
         batch.animais_iniciais = int(request.form.get("animais_iniciais", 0) or 0)
         batch.animais_final = int(request.form.get("animais_final", 0) or 0)
 
+        # Recalcula tudo
         batch.gpd = calc_gpd(batch.peso_inicial, batch.peso_final, batch.dias)
         batch.ca = calc_ca(batch.racao_total_kg, batch.peso_inicial, batch.peso_final)
         batch.viabilidade_pct = calc_viabilidade(batch.animais_iniciais, batch.animais_final)
         batch.mortalidade_pct = calc_mortalidade(batch.animais_iniciais, batch.animais_final)
 
+        # Referência manual (cooperativa informada pelo produtor)
         batch.ca_coop_ref = float(request.form.get("ca_coop_ref", 0) or 0)
         batch.gpd_coop_ref = float(request.form.get("gpd_coop_ref", 0) or 0)
 
-        coop_media_gpd, coop_media_ca, bonus_base = get_benchmark(cadeia, current_user)
+        meta_gpd_db, meta_ca_db, bonus_base = get_benchmark(cadeia, current_user.cooperativa)
+        meta_ca = batch.ca_coop_ref if batch.ca_coop_ref > 0 else meta_ca_db
+        meta_gpd = batch.gpd_coop_ref if batch.gpd_coop_ref > 0 else meta_gpd_db
+
+        batch.ca_ajustada = batch.ca # Default
+        batch.iep = 0.0
+        batch.indice_lote = 0.0
+        batch.peso_vivo_medio = 0.0
+        batch.peso_carcaca_medio = 0.0
+        batch.rendimento_carcaca_pct = 0.0
+        batch.carne_magra_pct = 0.0
+        batch.bonus_tipificacao = 0.0
 
         if cadeia == "avicultura":
             batch.peso_meta_coop = float(request.form.get("peso_meta_coop", 0) or 0)
             batch.idade_meta_coop = int(request.form.get("idade_meta_coop", 0) or 0)
             batch.fator_peso_caa = float(request.form.get("fator_peso_caa", 0.30) or 0.30)
             batch.fator_idade_caa = float(request.form.get("fator_idade_caa", 0.01) or 0.01)
-            batch.ca_ajustada = calc_ca_ajustada_avicultura(batch.ca, batch.peso_final, batch.dias,
-                                                             batch.peso_meta_coop, batch.idade_meta_coop,
-                                                             batch.fator_peso_caa, batch.fator_idade_caa)
+
+            if batch.peso_meta_coop > 0 and batch.idade_meta_coop > 0:
+                batch.ca_ajustada = calc_ca_ajustada_avicultura(
+                    ca_observada=batch.ca,
+                    peso_real=batch.peso_final,
+                    idade_real=batch.dias,
+                    peso_meta=batch.peso_meta_coop,
+                    idade_meta=batch.idade_meta_coop,
+                    fator_peso=batch.fator_peso_caa,
+                    fator_idade=batch.fator_idade_caa
+                )
             batch.iep = calc_iep_avicultura(batch.viabilidade_pct, batch.peso_final, batch.dias, batch.ca_ajustada)
-            batch.bonificacao = calc_bonificacao(batch.gpd, batch.ca_ajustada, coop_media_gpd, coop_media_ca, bonus_base)
-        elif cadeia == "suinocultura":
+
+        if cadeia == "suinocultura":
             batch.peso_vivo_medio = float(request.form.get("peso_vivo_medio", 0) or 0)
             batch.peso_carcaca_medio = float(request.form.get("peso_carcaca_medio", 0) or 0)
             batch.carne_magra_pct = float(request.form.get("carne_magra_pct", 0) or 0)
+
             batch.rendimento_carcaca_pct = calc_rendimento_carcaca(batch.peso_vivo_medio, batch.peso_carcaca_medio)
-            batch.bonus_tipificacao = calc_bonus_tipificacao(batch.carne_magra_pct, batch.rendimento_carcaca_pct)
-            batch.ca_ajustada = batch.ca # Suínos geralmente não usam CAA da mesma forma que aves
+
+            if batch.peso_vivo_medio > 0:
+                ajuste_peso = 0.003 * (batch.peso_vivo_medio - 120.0)
+                batch.ca_ajustada = round(max(batch.ca + ajuste_peso, 0.01), 4)
+
             batch.indice_lote = calc_indice_lote_suino(batch.gpd, batch.viabilidade_pct, batch.ca_ajustada)
-            batch.bonificacao = calc_bonificacao(batch.gpd, batch.ca_ajustada, coop_media_gpd, coop_media_ca, bonus_base) + batch.bonus_tipificacao
+            batch.bonus_tipificacao = calc_bonus_tipificacao(batch.carne_magra_pct, batch.rendimento_carcaca_pct)
+
+        bon = calc_bonificacao(batch.gpd, batch.ca_ajustada, meta_gpd, meta_ca, bonus_base)
+        batch.bonificacao = round(bon + batch.bonus_tipificacao, 2)
+        batch.coop_media_gpd = meta_gpd
+        batch.coop_media_ca = meta_ca
 
         db.session.commit()
         flash(f"Lote de {cadeia} atualizado com sucesso!")
         return redirect(url_for(cadeia))
 
     html_content = """
-    <h2>Editar Lote de """ + cadeia.capitalize() + """</h2>
+    <h2>Editar Lote de {{ cadeia|capitalize }}</h2>
     <div class="card" style="max-width:700px;margin:0 auto">
       <form method="post">
         <label>Estrutura</label>
@@ -1161,7 +1511,7 @@ def editar_lote(cadeia, batch_id):
         <input type="number" step="0.0001" name="ca_coop_ref" value="{{ batch.ca_coop_ref }}">
 
         {% if cadeia == 'avicultura' %}
-          <h4>Parâmetros CAA (Avicultura)</h4>
+          <h4>CA Ajustada (Avicultura)</h4>
           <label>Peso meta coop (kg)</label>
           <input type="number" step="0.0001" name="peso_meta_coop" value="{{ batch.peso_meta_coop }}" required>
           <label>Idade meta coop (dias)</label>
@@ -1589,196 +1939,6 @@ def e404(_):
 @app.errorhandler(500)
 def e500(_):
     return page("<div class='card'><h2>500</h2><p>Erro interno do servidor.</p></div>", title="500"), 500
-
-
-# =========================================================
-# ADMIN
-# =========================================================
-@app.route("/admin")
-@admin_required
-def admin_panel():
-    solicitacoes = AccessRequest.query.filter_by(status="pendente").order_by(AccessRequest.criado_em.desc()).all()
-    convites = AccessInvite.query.filter_by(status="convidado").order_by(AccessInvite.criado_em.desc()).all()
-    usuarios = User.query.order_by(User.criado_em.desc()).all()
-    benchmarks_coop = CoopBenchmark.query.all()
-
-    html_content = """
-    <h2>Painel Administrativo</h2>
-
-    <div class="card">
-      <h3>Solicitações de Acesso</h3>
-      <table>
-        <tr><th>Data</th><th>Nome</th><th>Email</th><th>Segmento</th><th>Status</th><th>Ação</th></tr>
-        {% for s in solicitacoes %}
-          <tr>
-            <td>{{ s.criado_em.strftime("%d/%m %H:%M") }}</td>
-            <td>{{ s.nome }}</td>
-            <td>{{ s.email }}</td>
-            <td>{{ s.segmento|capitalize }}</td>
-            <td>{{ s.status|capitalize }}</td>
-            <td>
-              <form method="post" action="{{ url_for('aprovar_solicitacao', request_id=s.id) }}" style="display:inline;">
-                <button type="submit" class="btn btn-ok">Aprovar</button>
-              </form>
-              <form method="post" action="{{ url_for('negar_solicitacao', request_id=s.id) }}" style="display:inline;">
-                <button type="submit" class="btn btn-ghost">Negar</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-      </table>
-    </div>
-
-    <div class="card">
-      <h3>Convites Pendentes</h3>
-      <table>
-        <tr><th>Email</th><th>Status</th><th>Token</th></tr>
-        {% for c in convites %}
-          <tr>
-            <td>{{ c.email }}</td>
-            <td>{{ c.status|capitalize }}</td>
-            <td>{{ c.token }}</td>
-          </tr>
-        {% endfor %}
-      </table>
-    </div>
-
-    <div class="card">
-      <h3>Usuários</h3>
-      <table>
-        <tr><th>Nome</th><th>Email</th><th>Perfil</th><th>Status</th><th>Segmento</th><th>Ações</th></tr>
-        {% for u in usuarios %}
-          <tr>
-            <td>{{ u.nome }}</td>
-            <td>{{ u.email }}</td>
-            <td>{{ u.perfil|capitalize }}</td>
-            <td>{{ u.status|capitalize }}</td>
-            <td>{{ u.segmento|capitalize if u.segmento else '-' }}</td>
-            <td>
-              {% if u.perfil != 'admin' %}
-                <form method="post" action="{{ url_for('bloquear_usuario', user_id=u.id) }}" style="display:inline;">
-                  <button type="submit" class="btn btn-ghost">Bloquear</button>
-                </form>
-                <form method="post" action="{{ url_for('desbloquear_usuario', user_id=u.id) }}" style="display:inline;">
-                  <button type="submit" class="btn btn-ok">Desbloquear</button>
-                </form>
-              {% else %}
-                <span>Admin</span>
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-      </table>
-    </div>
-
-    <div class="card">
-      <h3>Benchmark cooperativa</h3>
-      <form method="post" action="{{ url_for('atualizar_benchmark_coop') }}">
-        <label>Cadeia</label>
-        <select name="cadeia">
-          <option value="avicultura">Avicultura</option>
-          <option value="suinocultura">Suinocultura</option>
-        </select>
-        <label>Cooperativa</label>
-        <input name="cooperativa" placeholder="Nome da cooperativa" required>
-        <label>Média GPD</label>
-        <input type="number" step="0.0001" name="media_gpd" required>
-        <label>Média CA</label>
-        <input type="number" step="0.0001" name="media_ca" required>
-        <label>Base bônus R$</label>
-        <input type="number" step="0.01" name="bonus_base" required>
-        <button class="btn btn-pri" type="submit">Salvar</button>
-      </form>
-      <table>
-        <tr><th>Cadeia</th><th>Cooperativa</th><th>GPD</th><th>CA</th><th>Base bônus</th></tr>
-        {% for b in benchmarks_coop %}
-          <tr>
-            <td>{{ b.cadeia|capitalize }}</td>
-            <td>{{ b.cooperativa }}</td>
-            <td>{{ b.media_gpd }}</td>
-            <td>{{ b.media_ca }}</td>
-            <td>{{ b.bonus_base }}</td>
-          </tr>
-        {% endfor %}
-      </table>
-    </div>
-    """
-    return page(html_content, title="AP360 | Admin", solicitacoes=solicitacoes, convites=convites, usuarios=usuarios, benchmarks_coop=benchmarks_coop)
-
-
-@app.route("/admin/aprovar_solicitacao/<int:request_id>", methods=["POST"])
-@admin_required
-def aprovar_solicitacao(request_id):
-    solicitacao = AccessRequest.query.get_or_404(request_id)
-    solicitacao.status = "liberado"
-    token = secrets.token_urlsafe(16)
-    invite = AccessInvite(email=solicitacao.email, token=token, request_id=solicitacao.id)
-    db.session.add(invite)
-    db.session.commit()
-    flash(f"Solicitação de {solicitacao.email} aprovada. Convite gerado: {token}")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/negar_solicitacao/<int:request_id>", methods=["POST"])
-@admin_required
-def negar_solicitacao(request_id):
-    solicitacao = AccessRequest.query.get_or_404(request_id)
-    solicitacao.status = "negado"
-    db.session.commit()
-    flash(f"Solicitação de {solicitacao.email} negada.")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/bloquear_usuario/<int:user_id>", methods=["POST"])
-@admin_required
-def bloquear_usuario(user_id):
-    user = User.query.get_or_404(user_id)
-    if user.perfil == "admin":
-        flash("Não é possível bloquear um administrador.")
-    else:
-        user.status = "bloqueado"
-        db.session.commit()
-        flash(f"Usuário {user.email} bloqueado.")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/desbloquear_usuario/<int:user_id>", methods=["POST"])
-@admin_required
-def desbloquear_usuario(user_id):
-    user = User.query.get_or_404(user_id)
-    user.status = "ativo"
-    db.session.commit()
-    flash(f"Usuário {user.email} desbloqueado.")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/atualizar_benchmark_coop", methods=["POST"])
-@admin_required
-def atualizar_benchmark_coop():
-    cadeia = request.form.get("cadeia", "").strip()
-    cooperativa = request.form.get("cooperativa", "").strip()
-    media_gpd = float(request.form.get("media_gpd", 0) or 0)
-    media_ca = float(request.form.get("media_ca", 0) or 0)
-    bonus_base = float(request.form.get("bonus_base", 0) or 0)
-
-    benchmark = CoopBenchmark.query.filter_by(cadeia=cadeia, cooperativa=cooperativa).first()
-    if benchmark:
-        benchmark.media_gpd = media_gpd
-        benchmark.media_ca = media_ca
-        benchmark.bonus_base = bonus_base
-        benchmark.atualizado_em = datetime.utcnow()
-    else:
-        benchmark = CoopBenchmark(
-            cadeia=cadeia,
-            cooperativa=cooperativa,
-            media_gpd=media_gpd,
-            media_ca=media_ca,
-            bonus_base=bonus_base
-        )
-        db.session.add(benchmark)
-    db.session.commit()
-    flash(f"Benchmark da cooperativa {cooperativa} ({cadeia}) atualizado com sucesso!")
-    return redirect(url_for("admin_panel"))
 
 
 # =========================================================
