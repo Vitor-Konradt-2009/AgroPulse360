@@ -1628,7 +1628,7 @@ def editar_lote(cadeia, batch_id):
         batch.peso_carcaca_medio = 0.0
         batch.rendimento_carcaca_pct = 0.0
         batch.carne_magra_pct = 0.0
-        batch.bonus_tipificacao = 0.0
+        bonus_tipificacao = 0.0
 
         if cadeia == "avicultura":
             batch.peso_meta_coop = float(request.form.get("peso_meta_coop", 0) or 0)
@@ -1657,13 +1657,13 @@ def editar_lote(cadeia, batch_id):
 
             if batch.peso_vivo_medio > 0:
                 ajuste_peso = 0.003 * (batch.peso_vivo_medio - 120.0)
-                ca_ajustada = round(max(batch.ca + ajuste_peso, 0.01), 4)
+                batch.ca_ajustada = round(max(batch.ca + ajuste_peso, 0.01), 4)
 
             batch.indice_lote = calc_indice_lote_suino(batch.gpd, batch.viabilidade_pct, batch.ca_ajustada)
-            batch.bonus_tipificacao = calc_bonus_tipificacao(batch.carne_magra_pct, batch.rendimento_carcaca_pct)
+            bonus_tipificacao = calc_bonus_tipificacao(batch.carne_magra_pct, batch.rendimento_carcaca_pct)
 
         bon = calc_bonificacao(batch.gpd, batch.ca_ajustada, meta_gpd, meta_ca, bonus_base)
-        batch.bonificacao = round(bon + batch.bonus_tipificacao, 2)
+        batch.bonificacao = round(bon + bonus_tipificacao, 2)
         batch.coop_media_gpd = meta_gpd
         batch.coop_media_ca = meta_ca
 
