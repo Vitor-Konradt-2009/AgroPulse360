@@ -481,8 +481,8 @@ BASE_HTML = """
           <a href="{{ url_for('dashboard') }}">Dashboard</a>
           <a href="{{ url_for('agricultura') }}">Agricultura</a>
           <a href="{{ url_for('avicultura') }}">Avicultura</a>
-          <a href="{{ url_for('suinocultura') }}">Suinocultura</a>
-          <a href="{{ url_for('bovinocultura') }}">Bovinocultura</a>
+          <a href="{{ url_for('suinocultura') }}">Suinocultura</a>          
+          <a href="{{ url_for('bovinocultura', animal=None) }}">Bovinocultura</a>
           <a href="{{ url_for('ia_page') }}">IA</a>
           {% if current_user.perfil == "admin" %}
             <a href="{{ url_for('admin_panel') }}">Admin</a>
