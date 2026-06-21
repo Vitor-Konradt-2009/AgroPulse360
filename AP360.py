@@ -7,7 +7,7 @@ from functools import wraps
 
 from flask import (
     Flask, request, redirect, url_for, flash,
-    render_template, render_template_string, jsonify, Response, abort
+    render_template_string, jsonify, Response, abort
 )
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (
@@ -31,7 +31,7 @@ def normalize_database_url(db_url: str) -> str:
 app = Flask(__name__)
 app.url_map.strict_slashes = False
 
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "ap360vitor")
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "troque-essa-chave")
 app.config["SQLALCHEMY_DATABASE_URI"] = normalize_database_url(
     os.getenv("DATABASE_URL", "sqlite:///ap360.db")
 )
@@ -391,14 +391,128 @@ def get_benchmark(cadeia, user: User):
 
 
 # =========================================================
-# UI BASE (agora usa render_template)
+# UI BASE
 # =========================================================
+BASE_HTML = """
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title or "AP360" }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root{
+      --card:rgba(255,255,255,.10);
+      --line:rgba(255,255,255,.20);
+      --text:#f8fbff;
+      --muted:#d4deef;
+      --ok:#46dd98;
+      --pri:#3bb9ff;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:Inter,Arial,sans-serif;
+      color:var(--text);
+      background:
+        linear-gradient(120deg, rgba(59,185,255,.15), rgba(70,221,152,.12)),
+        url('https://images.unsplash.com/photo-1500937386664-56d1dfef3854?q=80&w=1800&auto=format&fit=crop') center/cover fixed no-repeat;
+      min-height:100vh;
+    }
+    .wrap{min-height:100vh;background:linear-gradient(180deg, rgba(8,14,30,.75), rgba(8,14,30,.90));padding:20px}
+    .container{max-width:1200px;margin:0 auto}
+    .nav{
+      display:flex;justify-content:space-between;align-items:center;gap:10px;
+      background:rgba(255,255,255,.07);border:1px solid var(--line);
+      border-radius:14px;padding:12px 16px;backdrop-filter:blur(8px);margin-bottom:14px
+    }
+    .brand{font-weight:800}
+    .brand b{color:var(--ok)}
+    .links a{color:var(--text);text-decoration:none;margin-left:12px;font-size:.93rem}
+    .hero{
+      border:1px solid var(--line);border-radius:20px;padding:24px;
+      background:linear-gradient(145deg, rgba(255,255,255,.13), rgba(255,255,255,.05))
+    }
+    .card{border:1px solid var(--line);border-radius:15px;padding:14px;background:var(--card);margin-top:12px}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    @media (max-width:900px){.grid,.grid3{grid-template-columns:1fr}}
+    .btn{display:inline-block;padding:10px 14px;border:none;border-radius:11px;font-weight:700;text-decoration:none;cursor:pointer}
+    .btn-ok{background:linear-gradient(135deg,var(--ok),#38c984);color:#042516}
+    .btn-pri{background:linear-gradient(135deg,var(--pri),#718aff);color:#041a30}
+    .btn-ghost{background:rgba(255,255,255,.14);color:#fff}
+    input,select,textarea{
+      width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;
+      background:rgba(255,255,255,.08);color:#fff;margin:5px 0
+    }
+    input::placeholder,textarea::placeholder{color:#dbe7ff90}
+    table{width:100%;border-collapse:collapse;font-size:.92rem}
+    th,td{border:1px solid var(--line);padding:8px;text-align:left}
+    .flash{padding:10px;background:rgba(255,255,255,.12);border:1px solid var(--line);border-radius:10px;margin-bottom:10px}
+    .muted{color:var(--muted)}
+    .kpi{font-size:1.25rem;font-weight:800}
+    .welcome-name {
+      color: var(--pri);
+      font-weight: 800;
+      text-transform: capitalize;
+    }
+    /* CSS para as opções de seleção */
+    select option {
+      background-color: #fff; /* Fundo branco para as opções */
+      color: #000;            /* Texto PRETO para as opções */
+    }
+    select option:checked {
+      background-color: var(--pri); /* Fundo azul para a opção selecionada */
+      color: #fff;                  /* Texto branco para a opção selecionada */
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="container">
+    <div class="nav">
+      <div class="brand">AP<b>360</b> — AgroPulse 360</div>
+      <div class="links">
+        {% if current_user.is_authenticated %}
+          <a href="{{ url_for('dashboard') }}">Dashboard</a>
+          <a href="{{ url_for('agricultura') }}">Agricultura</a>
+          <a href="{{ url_for('avicultura') }}">Avicultura</a>
+          <a href="{{ url_for('suinocultura') }}">Suinocultura</a>
+          <a href="{{ url_for('bovinocultura_index') }}">Bovinocultura</a>
+          <a href="{{ url_for('ia_page') }}">IA</a>
+          {% if current_user.perfil == "admin" %}
+            <a href="{{ url_for('admin_panel') }}">Admin</a>
+          {% endif %}
+          <a href="{{ url_for('logout') }}">Sair</a>
+        {% else %}
+          <a href="{{ url_for('index') }}">Início</a>
+          <a href="{{ url_for('login') }}">Login</a>
+          <a href="{{ url_for('signup_request') }}">Inscreva-se</a>
+        {% endif %}
+      </div>
+    </div>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for m in messages %}
+          <div class="flash">{{ m }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {{ content|safe }}
+  </div>
+</div>
+</body>
+</html>
+"""
+
 def page(content: str, **ctx):
-    # Renderiza o conteúdo específico da página com o contexto fornecido
-    # Usamos render_template_string para o 'content' que ainda é uma string HTML
-    processed_content = render_template_string(content, **ctx)
-    # Renderiza o template base.html, injetando o conteúdo processado
-    return render_template("base.html", content=processed_content, **ctx)
+    return render_template_string(BASE_HTML, content=content, **ctx)
 
 
 # =========================================================
@@ -562,39 +676,33 @@ def activate_account(token):
         if senha != confirmar:
             flash("Senha e confirmação não conferem.")
             return redirect(url_for("activate_account", token=token))
-        if len(senha) < 6:
-            flash("Senha deve ter no mínimo 6 caracteres.")
-            return redirect(url_for("activate_account", token=token))
-        if User.query.filter_by(email=inv.email).first():
-            flash("Já existe uma conta ativa com este e-mail. Por favor, faça login.")
-            return redirect(url_for("login"))
 
-        req = AccessRequest.query.get(inv.request_id) if inv.request_id else None
+        # Cria o usuário
         user = User(
-            nome=req.nome if req and req.nome else "Produtor",
-            cpf=req.cpf if req else None,
-            telefone=req.telefone if req else None,
+            nome=inv.access_request.nome if inv.access_request else "Usuário",
+            cpf=inv.access_request.cpf if inv.access_request else None,
+            telefone=inv.access_request.telefone if inv.access_request else None,
             email=inv.email,
-            perfil="produtor",
-            status="ativo",
-            segmento=req.segmento if req and req.segmento else "agricultura",
-            cooperativa=req.cooperativa if req and req.cooperativa else None
+            segmento=inv.access_request.segmento if inv.access_request else "agricultura",
+            cooperativa=inv.access_request.cooperativa if inv.access_request else None,
+            perfil="produtor", # Sempre cria como produtor
+            status="ativo"
         )
         user.set_password(senha)
         db.session.add(user)
 
+        # Atualiza o convite
         inv.status = "ativado"
         inv.ativado_em = datetime.utcnow()
-        db.session.add(inv)
-
         db.session.commit()
-        flash("Conta ativada com sucesso! Faça login para continuar.")
+
+        flash("Conta ativada com sucesso! Faça login.")
         return redirect(url_for("login"))
 
     html_content = """
     <div class="card" style="max-width:400px;margin:0 auto">
-      <h2 style="margin-top:0">Ativar conta</h2>
-      <p class="muted">E-mail: {{ inv.email }}</p>
+      <h2 style="margin-top:0">Ativar Conta</h2>
+      <p class="muted">Crie sua senha para ativar a conta.</p>
       <form method="post">
         <input name="senha" type="password" placeholder="Nova senha" required>
         <input name="confirmar_senha" type="password" placeholder="Confirmar senha" required>
@@ -602,46 +710,162 @@ def activate_account(token):
       </form>
     </div>
     """
-    return page(html_content, title="AP360 | Ativar conta", inv=inv)
+    return page(html_content, title="AP360 | Ativar Conta")
+
+
+# =========================================================
+# DASHBOARD
+# =========================================================
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    html_content = f"""
+    <section class="hero">
+      <h1 style="margin:0;font-size:2.15rem">Olá, <span class="welcome-name">{current_user.nome.split(' ')[0]}</span>!</h1>
+      <p class="muted">Bem-vindo(a) ao seu painel de controle AP360.</p>
+    </section>
+
+    <div class="grid3">
+      <div class="card">
+        <h3>Agricultura</h3>
+        <p class="muted">Acompanhe suas cotações e margens.</p>
+        <a class="btn btn-ghost" href="{url_for('agricultura')}">Acessar</a>
+      </div>
+      <div class="card">
+        <h3>Avicultura</h3>
+        <p class="muted">Gerencie seus lotes de aves.</p>
+        <a class="btn btn-ghost" href="{url_for('avicultura')}">Acessar</a>
+      </div>
+      <div class="card">
+        <h3>Suinocultura</h3>
+        <p class="muted">Monitore o desempenho dos seus suínos.</p>
+        <a class="btn btn-ghost" href="{url_for('suinocultura')}">Acessar</a>
+      </div>
+      <div class="card">
+        <h3>Bovinocultura</h3>
+        <p class="muted">Controle seu rebanho bovino.</p>
+        <a class="btn btn-ghost" href="{url_for('bovinocultura_index')}">Acessar</a>
+      </div>
+      <div class="card">
+        <h3>Assistente IA</h3>
+        <p class="muted">Obtenha insights e dicas personalizadas.</p>
+        <a class="btn btn-ghost" href="{url_for('ia_page')}">Acessar</a>
+      </div>
+      {% if current_user.perfil == "admin" %}
+      <div class="card">
+        <h3>Painel Admin</h3>
+        <p class="muted">Gerencie usuários e configurações.</p>
+        <a class="btn btn-ghost" href="{url_for('admin_panel')}">Acessar</a>
+      </div>
+      {% endif %}
+    </div>
+    """
+    return page(html_content, title="AP360 | Dashboard")
 
 
 # =========================================================
 # ADMIN
 # =========================================================
-@app.route("/admin", methods=["GET", "POST"]) # Adicionado POST para o formulário de benchmark
+@app.route("/admin", methods=["GET", "POST"])
 @login_required
 @admin_required
 def admin_panel():
     if request.method == "POST":
         form_type = request.form.get("form_type")
-        if form_type == "novo_benchmark":
-            cadeia = request.form.get("cadeia")
-            cooperativa = request.form.get("cooperativa")
-            media_gpd = float(request.form.get("media_gpd"))
-            media_ca = float(request.form.get("media_ca"))
-            bonus_base = float(request.form.get("bonus_base"))
 
-            # Verifica se já existe um benchmark para a mesma cadeia e cooperativa
-            existing_benchmark = CoopBenchmark.query.filter_by(cadeia=cadeia, cooperativa=cooperativa).first()
-            if existing_benchmark:
-                flash(f"Benchmark para {cooperativa} ({cadeia}) já existe. Edite-o se necessário.")
-            else:
-                new_benchmark = CoopBenchmark(
-                    cadeia=cadeia,
-                    cooperativa=cooperativa,
-                    media_gpd=media_gpd,
-                    media_ca=media_ca,
-                    bonus_base=bonus_base
-                )
-                db.session.add(new_benchmark)
+        if form_type == "aprovar_solicitacao":
+            req_id = request.form.get("request_id")
+            req = AccessRequest.query.get(req_id)
+            if req:
+                # Cria um token de convite
+                token = secrets.token_urlsafe(32)
+                invite = AccessInvite(email=req.email, token=token, request_id=req.id)
+                db.session.add(invite)
+                req.status = "liberado"
                 db.session.commit()
-                flash("Benchmark adicionado com sucesso!")
+                flash(f"Solicitação de {req.email} aprovada. Convite enviado.")
+            else:
+                flash("Solicitação não encontrada.")
             return redirect(url_for("admin_panel"))
 
-    reqs = AccessRequest.query.filter_by(status="pendente").order_by(AccessRequest.criado_em.desc()).all()
-    invites = AccessInvite.query.filter_by(status="convidado").order_by(AccessInvite.criado_em.desc()).all()
+        elif form_type == "negar_solicitacao":
+            req_id = request.form.get("request_id")
+            req = AccessRequest.query.get(req_id)
+            if req:
+                req.status = "negado"
+                db.session.commit()
+                flash(f"Solicitação de {req.email} negada.")
+            else:
+                flash("Solicitação não encontrada.")
+            return redirect(url_for("admin_panel"))
+
+        elif form_type == "bloquear_usuario":
+            user_id = request.form.get("user_id")
+            user = User.query.get(user_id)
+            if user and user.perfil != "admin": # Admin não pode bloquear outro admin
+                user.status = "bloqueado"
+                db.session.commit()
+                flash(f"Usuário {user.email} bloqueado.")
+            else:
+                flash("Usuário não encontrado ou é um administrador.")
+            return redirect(url_for("admin_panel"))
+
+        elif form_type == "ativar_usuario":
+            user_id = request.form.get("user_id")
+            user = User.query.get(user_id)
+            if user:
+                user.status = "ativo"
+                db.session.commit()
+                flash(f"Usuário {user.email} ativado.")
+            else:
+                flash("Usuário não encontrado.")
+            return redirect(url_for("admin_panel"))
+
+        elif form_type == "excluir_usuario":
+            user_id = request.form.get("user_id")
+            user = User.query.get(user_id)
+            if user and user.perfil != "admin":
+                db.session.delete(user)
+                db.session.commit()
+                flash(f"Usuário {user.email} excluído.")
+            else:
+                flash("Usuário não encontrado ou é um administrador.")
+            return redirect(url_for("admin_panel"))
+
+        elif form_type == "definir_benchmark":
+            cadeia = request.form.get("cadeia")
+            cooperativa = request.form.get("cooperativa")
+            media_gpd = float(request.form.get("media_gpd", 0) or 0)
+            media_ca = float(request.form.get("media_ca", 0) or 0)
+            bonus_base = float(request.form.get("bonus_base", 0) or 0)
+
+            benchmark = CoopBenchmark.query.filter_by(cadeia=cadeia, cooperativa=cooperativa).first()
+            if benchmark:
+                benchmark.media_gpd = media_gpd
+                benchmark.media_ca = media_ca
+                benchmark.bonus_base = bonus_base
+            else:
+                benchmark = CoopBenchmark(cadeia=cadeia, cooperativa=cooperativa, media_gpd=media_gpd, media_ca=media_ca, bonus_base=bonus_base)
+                db.session.add(benchmark)
+            db.session.commit()
+            flash(f"Benchmark para {cadeia} da {cooperativa} atualizado/criado.")
+            return redirect(url_for("admin_panel"))
+
+        elif form_type == "excluir_benchmark":
+            benchmark_id = request.form.get("benchmark_id")
+            benchmark = CoopBenchmark.query.get(benchmark_id)
+            if benchmark:
+                db.session.delete(benchmark)
+                db.session.commit()
+                flash(f"Benchmark de {benchmark.cadeia} da {benchmark.cooperativa} excluído.")
+            else:
+                flash("Benchmark não encontrado.")
+            return redirect(url_for("admin_panel"))
+
+    reqs = AccessRequest.query.filter_by(status="pendente").order_by(AccessRequest.criado_em.asc()).all()
+    invites = AccessInvite.query.filter_by(status="convidado").order_by(AccessInvite.criado_em.asc()).all()
     users = User.query.order_by(User.criado_em.desc()).all()
-    benches = CoopBenchmark.query.order_by(CoopBenchmark.cadeia, CoopBenchmark.cooperativa).all()
+    benches = CoopBenchmark.query.order_by(CoopBenchmark.cadeia.asc()).all()
 
     html_content = """
     <h2>Painel Administrativo</h2>
@@ -655,81 +879,87 @@ def admin_panel():
             <td>{{ r.nome }}</td>
             <td>{{ r.email }}</td>
             <td>{{ r.segmento|capitalize }}</td>
-            <td>{{ r.cooperativa or "Indefinida" }}</td>
+            <td>{{ r.cooperativa or "-" }}</td>
             <td>
-              <form method="post" action="{{ url_for('admin_approve_request', req_id=r.id) }}" style="display:inline;">
+              <form method="post" style="display:inline;">
+                <input type="hidden" name="form_type" value="aprovar_solicitacao">
+                <input type="hidden" name="request_id" value="{{ r.id }}">
                 <button type="submit" class="btn btn-ok">Aprovar</button>
               </form>
-              <form method="post" action="{{ url_for('admin_deny_request', req_id=r.id) }}" style="display:inline;">
+              <form method="post" style="display:inline;">
+                <input type="hidden" name="form_type" value="negar_solicitacao">
+                <input type="hidden" name="request_id" value="{{ r.id }}">
                 <button type="submit" class="btn btn-ghost">Negar</button>
               </form>
             </td>
           </tr>
+        {% else %}
+          <tr><td colspan="5">Nenhuma solicitação pendente.</td></tr>
         {% endfor %}
       </table>
     </div>
 
     <div class="card">
-      <h3>Convites Pendentes</h3>
+      <h3>Usuários Cadastrados</h3>
       <table>
-        <tr><th>E-mail</th><th>Token</th><th>Ações</th></tr>
-        {% for i in invites %}
-          <tr>
-            <td>{{ i.email }}</td>
-            <td>{{ i.token }}</td>
-            <td>
-              <form method="post" action="{{ url_for('admin_revoke_invite', invite_id=i.id) }}" style="display:inline;">
-                <button type="submit" class="btn btn-ghost">Revogar</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-      </table>
-    </div>
-
-    <div class="card">
-      <h3>Usuários Ativos</h3>
-      <table>
-        <tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Segmento</th><th>Cooperativa</th><th>Status</th><th>Ações</th></tr>
+        <tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Ações</th></tr>
         {% for u in users %}
           <tr>
             <td>{{ u.nome }}</td>
             <td>{{ u.email }}</td>
             <td>{{ u.perfil|capitalize }}</td>
-            <td>{{ u.segmento|capitalize }}</td>
-            <td>{{ u.cooperativa or "Indefinida" }}</td>
             <td>{{ u.status|capitalize }}</td>
             <td>
               {% if u.perfil != "admin" %}
-                <form method="post" action="{{ url_for('admin_toggle_user_status', user_id=u.id) }}" style="display:inline;">
-                  <button type="submit" class="btn btn-ghost">
-                    {% if u.status == "ativo" %}Bloquear{% else %}Ativar{% endif %}
-                  </button>
-                </form>
-                <form method="post" action="{{ url_for('admin_delete_user', user_id=u.id) }}" style="display:inline;">
+                {% if u.status == "ativo" %}
+                  <form method="post" style="display:inline;">
+                    <input type="hidden" name="form_type" value="bloquear_usuario">
+                    <input type="hidden" name="user_id" value="{{ u.id }}">
+                    <button type="submit" class="btn btn-ghost">Bloquear</button>
+                  </form>
+                {% else %}
+                  <form method="post" style="display:inline;">
+                    <input type="hidden" name="form_type" value="ativar_usuario">
+                    <input type="hidden" name="user_id" value="{{ u.id }}">
+                    <button type="submit" class="btn btn-ok">Ativar</button>
+                  </form>
+                {% endif %}
+                <form method="post" style="display:inline;">
+                  <input type="hidden" name="form_type" value="excluir_usuario">
+                  <input type="hidden" name="user_id" value="{{ u.id }}">
                   <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este usuário?');">Excluir</button>
                 </form>
+              {% else %}
+                <span class="muted">Admin</span>
               {% endif %}
             </td>
           </tr>
+        {% else %}
+          <tr><td colspan="5">Nenhum usuário cadastrado.</td></tr>
         {% endfor %}
       </table>
     </div>
 
     <div class="card">
-      <h3>Benchmarks de Cooperativas</h3>
+      <h3>Benchmarks da Cooperativa</h3>
       <form method="post">
-        <input type="hidden" name="form_type" value="novo_benchmark">
+        <input type="hidden" name="form_type" value="definir_benchmark">
+        <label>Cadeia</label>
         <select name="cadeia" required>
           <option value="avicultura">Avicultura</option>
           <option value="suinocultura">Suinocultura</option>
         </select>
+        <label>Cooperativa</label>
         <input name="cooperativa" placeholder="Nome da Cooperativa" required>
-        <input type="number" step="0.001" name="media_gpd" placeholder="Média GPD" required>
-        <input type="number" step="0.01" name="media_ca" placeholder="Média CA" required>
-        <input type="number" step="0.01" name="bonus_base" placeholder="Bônus Base" required>
-        <button class="btn btn-pri" type="submit">Adicionar Benchmark</button>
+        <label>Média GPD</label>
+        <input type="number" step="0.0001" name="media_gpd" required>
+        <label>Média CA</label>
+        <input type="number" step="0.0001" name="media_ca" required>
+        <label>Bônus Base (R$)</label>
+        <input type="number" step="0.01" name="bonus_base" required>
+        <button class="btn btn-pri" type="submit">Salvar Benchmark</button>
       </form>
+
       <table>
         <tr><th>Cadeia</th><th>Cooperativa</th><th>Média GPD</th><th>Média CA</th><th>Bônus Base</th><th>Ações</th></tr>
         {% for b in benches %}
@@ -740,117 +970,20 @@ def admin_panel():
             <td>{{ b.media_ca }}</td>
             <td>R$ {{ b.bonus_base }}</td>
             <td>
-              <form method="post" action="{{ url_for('admin_delete_benchmark', bench_id=b.id) }}" style="display:inline;">
+              <form method="post" style="display:inline;">
+                <input type="hidden" name="form_type" value="excluir_benchmark">
+                <input type="hidden" name="benchmark_id" value="{{ b.id }}">
                 <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este benchmark?');">Excluir</button>
               </form>
             </td>
           </tr>
+        {% else %}
+          <tr><td colspan="6">Nenhum benchmark definido.</td></tr>
         {% endfor %}
       </table>
     </div>
     """
     return page(html_content, title="AP360 | Admin", reqs=reqs, invites=invites, users=users, benches=benches)
-
-
-@app.route("/admin/approve_request/<int:req_id>", methods=["POST"])
-@login_required
-@admin_required
-def admin_approve_request(req_id):
-    req = AccessRequest.query.get_or_404(req_id)
-    token = secrets.token_urlsafe(32)
-    inv = AccessInvite(email=req.email, token=token, request_id=req.id)
-    db.session.add(inv)
-    req.status = "liberado"
-    db.session.commit()
-    flash(f"Solicitação de {req.email} aprovada. Convite gerado.")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/deny_request/<int:req_id>", methods=["POST"])
-@login_required
-@admin_required
-def admin_deny_request(req_id):
-    req = AccessRequest.query.get_or_404(req_id)
-    req.status = "negado"
-    db.session.commit()
-    flash(f"Solicitação de {req.email} negada.")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/revoke_invite/<int:invite_id>", methods=["POST"])
-@login_required
-@admin_required
-def admin_revoke_invite(invite_id):
-    inv = AccessInvite.query.get_or_404(invite_id)
-    db.session.delete(inv)
-    db.session.commit()
-    flash(f"Convite para {inv.email} revogado.")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/toggle_user_status/<int:user_id>", methods=["POST"])
-@login_required
-@admin_required
-def admin_toggle_user_status(user_id):
-    user = User.query.get_or_404(user_id)
-    if user.perfil == "admin":
-        flash("Não é possível bloquear ou ativar um administrador.")
-    else:
-        user.status = "bloqueado" if user.status == "ativo" else "ativo"
-        db.session.commit()
-        flash(f"Status do usuário {user.email} alterado para {user.status}.")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/delete_user/<int:user_id>", methods=["POST"])
-@login_required
-@admin_required
-def admin_delete_user(user_id):
-    user = User.query.get_or_404(user_id)
-    if user.perfil == "admin":
-        flash("Não é possível excluir um administrador.")
-    else:
-        # Excluir registros relacionados (lotes, cotações, bovinos, etc.)
-        Batch.query.filter_by(user_id=user.id).delete()
-        AgricultureQuote.query.filter_by(user_id=user.id).delete()
-        bovinos = Bovino.query.filter_by(user_id=user.id).all()
-        for bovino in bovinos:
-            BovinoPeso.query.filter_by(bovino_id=bovino.id).delete()
-            BovinoEvento.query.filter_by(bovino_id=bovino.id).delete()
-            db.session.delete(bovino)
-        db.session.delete(user)
-        db.session.commit()
-        flash(f"Usuário {user.email} e todos os seus dados excluídos.")
-    return redirect(url_for("admin_panel"))
-
-
-@app.route("/admin/delete_benchmark/<int:bench_id>", methods=["POST"])
-@login_required
-@admin_required
-def admin_delete_benchmark(bench_id):
-    benchmark = CoopBenchmark.query.get_or_404(bench_id)
-    db.session.delete(benchmark)
-    db.session.commit()
-    flash(f"Benchmark para {benchmark.cooperativa} ({benchmark.cadeia}) excluído.")
-    return redirect(url_for("admin_panel"))
-
-
-# =========================================================
-# DASHBOARD
-# =========================================================
-@app.route("/dashboard")
-@login_required
-def dashboard():
-    html_content = f"""
-    <h2>Dashboard</h2>
-    <div class="card">
-      <p>Bem-vindo(a), <span class="welcome-name">{current_user.nome.split(' ')[0].capitalize()}</span>!</p>
-      <p>Seu perfil: <b>{current_user.perfil.capitalize()}</b></p>
-      <p>Segmento principal: <b>{current_user.segmento.capitalize() if current_user.segmento else 'Não definido'}</b></p>
-      <p>Cooperativa: <b>{current_user.cooperativa or 'Indefinida'}</b></p>
-    </div>
-    """
-    return page(html_content, title="AP360 | Dashboard")
 
 
 # =========================================================
@@ -860,15 +993,14 @@ def dashboard():
 @login_required
 def agricultura():
     if request.method == "POST":
-        produto = request.form.get("produto", "").strip()
-        quantidade_ton = float(request.form.get("quantidade_ton", 0))
-        origem = request.form.get("origem", "").strip()
-        porto = request.form.get("porto", "").strip()
+        produto = request.form.get("produto")
+        quantidade_ton = float(request.form.get("quantidade_ton"))
+        origem = request.form.get("origem")
+        porto = request.form.get("porto")
 
-        cbot_rs_ton, cbot_usd_bushel = cbot_para_rs_ton(produto)
-        usd_brl = fx_usd_brl()
+        rs_ton, usd_bushel = cbot_para_rs_ton(produto)
         frete = frete_medio(origem, porto)
-        export_rs_ton = cbot_rs_ton
+        export_rs_ton = rs_ton
         liquido_rs_ton = export_rs_ton - frete
         total_rs = liquido_rs_ton * quantidade_ton
 
@@ -878,8 +1010,8 @@ def agricultura():
             quantidade_ton=quantidade_ton,
             origem=origem,
             porto=porto,
-            cbot_usd_bushel=cbot_usd_bushel,
-            usd_brl=usd_brl,
+            cbot_usd_bushel=usd_bushel,
+            usd_brl=fx_usd_brl(),
             export_rs_ton=export_rs_ton,
             frete_rs_ton=frete,
             liquido_rs_ton=liquido_rs_ton,
@@ -890,8 +1022,7 @@ def agricultura():
         flash("Cotação registrada com sucesso!")
         return redirect(url_for("agricultura"))
 
-    hist = AgricultureQuote.query.filter_by(user_id=current_user.id).order_by(AgricultureQuote.criado_em.desc()).all()
-    last_quote = hist[0] if hist else None
+    quotes = AgricultureQuote.query.filter_by(user_id=current_user.id).order_by(AgricultureQuote.criado_em.desc()).all()
 
     html_content = """
     <h2>Agricultura</h2>
@@ -909,81 +1040,61 @@ def agricultura():
         </select>
         <label>Quantidade (ton)</label>
         <input type="number" step="0.01" name="quantidade_ton" required>
-        <label>Origem (Cidade-UF)</label>
-        <input name="origem" placeholder="Ex: Cascavel-PR" required>
-        <label>Porto de Destino</label>
+        <label>Origem (Cidade - UF)</label>
+        <input name="origem" placeholder="Ex: Cascavel - PR" required>
+        <label>Porto</label>
         <select name="porto" required>
-          <option value="Paranaguá">Paranaguá</option>
-          <option value="Santos">Santos</option>
-          <option value="Rio Grande">Rio Grande</option>
-          <option value="Itajaí">Itajaí</option>
+          {% for p in PORTOS %}
+            <option value="{{ p }}">{{ p }}</option>
+          {% endfor %}
         </select>
         <button class="btn btn-pri" type="submit">Calcular e Salvar</button>
       </form>
     </div>
 
-    {% if last_quote %}
-      <div class="card">
-        <h3>Última Cotação Registrada ({{ last_quote.produto|capitalize }})</h3>
-        <div class="grid3">
-          <div><div class="muted">CBOT (USD/Bushel)</div><div class="kpi">${{ last_quote.cbot_usd_bushel }}</div></div>
-          <div><div class="muted">USD/BRL</div><div class="kpi">R${{ last_quote.usd_brl }}</div></div>
-          <div><div class="muted">Exportação (R$/ton)</div><div class="kpi">R${{ last_quote.export_rs_ton }}</div></div>
-        </div>
-        <div class="grid3">
-          <div><div class="muted">Frete (R$/ton)</div><div class="kpi">R${{ last_quote.frete_rs_ton }}</div></div>
-          <div><div class="muted">Líquido (R$/ton)</div><div class="kpi">R${{ last_quote.liquido_rs_ton }}</div></div>
-          <div><div class="muted">Total (R$)</div><div class="kpi">R${{ last_quote.total_rs }}</div></div>
-        </div>
-      </div>
-    {% endif %}
-
     <div class="card">
       <h3>Histórico de Cotações</h3>
       <table>
-        <tr><th>Data</th><th>Produto</th><th>Origem</th><th>Porto</th><th>Líquido (R$/ton)</th><th>Total (R$)</th><th>Ações</th></tr>
-        {% for q in hist %}
+        <tr>
+          <th>Data</th><th>Produto</th><th>Qtd (ton)</th><th>Origem</th><th>Porto</th>
+          <th>CBOT (USD/bu)</th><th>USD/BRL</th><th>Export (R$/ton)</th><th>Frete (R$/ton)</th>
+          <th>Líquido (R$/ton)</th><th>Total (R$)</th>
+        </tr>
+        {% for q in quotes %}
           <tr>
             <td>{{ q.criado_em.strftime("%d/%m %H:%M") }}</td>
             <td>{{ q.produto|capitalize }}</td>
+            <td>{{ q.quantidade_ton }}</td>
             <td>{{ q.origem }}</td>
             <td>{{ q.porto }}</td>
-            <td>R${{ q.liquido_rs_ton }}</td>
-            <td>R${{ q.total_rs }}</td>
-            <td>
-              <form method="post" action="{{ url_for('excluir_cotacao', quote_id=q.id) }}" style="display:inline;">
-                <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir esta cotação?');">Excluir</button>
-              </form>
-            </td>
+            <td>{{ q.cbot_usd_bushel }}</td>
+            <td>{{ q.usd_brl }}</td>
+            <td>{{ q.export_rs_ton }}</td>
+            <td>{{ q.frete_rs_ton }}</td>
+            <td>{{ q.liquido_rs_ton }}</td>
+            <td>{{ q.total_rs }}</td>
           </tr>
+        {% else %}
+          <tr><td colspan="11">Nenhuma cotação registrada.</td></tr>
         {% endfor %}
       </table>
     </div>
     """
-    return page(html_content, title="AP360 | Agricultura", last_quote=last_quote, hist=hist)
-
-
-@app.route("/agricultura/excluir/<int:quote_id>", methods=["POST"])
-@login_required
-def excluir_cotacao(quote_id):
-    quote = AgricultureQuote.query.filter_by(id=quote_id, user_id=current_user.id).first_or_404()
-    db.session.delete(quote)
-    db.session.commit()
-    flash("Cotação excluída com sucesso!")
-    return redirect(url_for("agricultura"))
+    return page(html_content, title="AP360 | Agricultura", quotes=quotes, PORTOS=PORTOS)
 
 
 # =========================================================
-# AVICULTURA / SUINOCULTURA (Módulo de Lotes)
+# AVICULTURA / SUINOCULTURA (MÓDULO DE LOTES)
 # =========================================================
-def modulo_lotes(cadeia: str):
+def modulo_lotes(cadeia):
     resultado = None
+    compare_data = None
     c1 = request.args.get("c1", type=int)
     c2 = request.args.get("c2", type=int)
-    compare_data = None
 
     if request.method == "POST":
         form_type = request.form.get("form_type")
+
         if form_type == "novo_lote":
             batch = Batch(user_id=current_user.id, cadeia=cadeia)
             batch.estrutura = request.form.get("estrutura", "").strip()
@@ -1085,10 +1196,187 @@ def modulo_lotes(cadeia: str):
                 "b_vals": [batch2.gpd, batch2.ca, batch2.viabilidade_pct, batch2.bonificacao],
             }
 
-    # Renderiza o template modulo_lotes.html
-    return render_template("modulo_lotes.html", title=f"AP360 | {cadeia.capitalize()}",
-                           cadeia=cadeia, resultado=resultado, hist=hist, compare_data=compare_data, c1=c1, c2=c2,
-                           current_user=current_user)
+    html_content = """
+    <h2>{{ cadeia|capitalize }}</h2>
+
+    <div class="card">
+      <h3>Novo Lote</h3>
+      <form method="post">
+        <input type="hidden" name="form_type" value="novo_lote">
+        <label>Estrutura</label>
+        <input name="estrutura" placeholder="Ex: Galpão 1, Baia 3" required>
+        <label>Lote</label>
+        <input name="lote" placeholder="Ex: Lote 2024-01" required>
+        <label>Peso inicial (kg)</label>
+        <input type="number" step="0.0001" name="peso_inicial" required>
+        <label>Peso final (kg)</label>
+        <input type="number" step="0.0001" name="peso_final" required>
+        <label>Dias de alojamento</label>
+        <input type="number" name="dias" required>
+        <label>Ração total (kg)</label>
+        <input type="number" step="0.0001" name="racao_total_kg" required>
+        <label>Animais iniciais</label>
+        <input type="number" name="animais_iniciais" required>
+        <label>Animais finais (abatidos/vendidos)</label>
+        <input type="number" name="animais_final" required>
+
+        <h4>Benchmark Pessoal (opcional, prioridade sobre cooperativa)</h4>
+        {% if cadeia == 'avicultura' %}
+          <label>Seu GPD médio ideal (Avicultura)</label>
+          <input type="number" step="0.0001" name="gpd_produtor_avicultura" value="{{ current_user.gpd_produtor_avicultura if current_user.gpd_produtor_avicultura > 0 else '' }}">
+          <label>Sua CA média ideal (Avicultura)</label>
+          <input type="number" step="0.0001" name="ca_produtor_avicultura" value="{{ current_user.ca_produtor_avicultura if current_user.ca_produtor_avicultura > 0 else '' }}">
+        {% elif cadeia == 'suinocultura' %}
+          <label>Seu GPD médio ideal (Suinocultura)</label>
+          <input type="number" step="0.0001" name="gpd_produtor_suinocultura" value="{{ current_user.gpd_produtor_suinocultura if current_user.gpd_produtor_suinocultura > 0 else '' }}">
+          <label>Sua CA média ideal (Suinocultura)</label>
+          <input type="number" step="0.0001" name="ca_produtor_suinocultura" value="{{ current_user.ca_produtor_suinocultura if current_user.ca_produtor_suinocultura > 0 else '' }}">
+        {% endif %}
+
+        <h4>Referência cooperativa (informada pelo produtor)</h4>
+        <label>GPD médio cooperativa (opcional)</label>
+        <input type="number" step="0.0001" name="gpd_coop_ref">
+        <label>CA média cooperativa (opcional)</label>
+        <input type="number" step="0.0001" name="ca_coop_ref">
+
+        {% if cadeia == 'avicultura' %}
+          <h4>Parâmetros CAA (Avicultura)</h4>
+          <label>Peso meta coop (kg)</label>
+          <input type="number" step="0.0001" name="peso_meta_coop" required>
+          <label>Idade meta coop (dias)</label>
+          <input type="number" name="idade_meta_coop" required>
+          <label>Fator peso CAA</label>
+          <input type="number" step="0.0001" name="fator_peso_caa" value="0.30">
+          <label>Fator idade CAA</label>
+          <input type="number" step="0.0001" name="fator_idade_caa" value="0.01">
+        {% endif %}
+
+        {% if cadeia == 'suinocultura' %}
+          <h4>Carcaça e tipificação (Suínos)</h4>
+          <label>Peso vivo médio (kg/cab)</label>
+          <input type="number" step="0.01" name="peso_vivo_medio" required>
+          <label>Peso carcaça médio (kg/cab)</label>
+          <input type="number" step="0.01" name="peso_carcaca_medio" required>
+          <label>% carne magra</label>
+          <input type="number" step="0.01" name="carne_magra_pct" required>
+        {% endif %}
+
+        <button class="btn btn-pri" type="submit">Calcular e Salvar</button>
+      </form>
+    </div>
+
+    {% if resultado %}
+      <div class="card">
+        <h3>Último Lote Registrado ({{ resultado.estrutura }} / {{ resultado.lote }})</h3>
+        <div class="grid3">
+          <div><div class="muted">GPD</div><div class="kpi">{{ resultado.gpd }}</div></div>
+          <div><div class="muted">CA</div><div class="kpi">{{ resultado.ca }}</div></div>
+          <div><div class="muted">CA Ajustada</div><div class="kpi">{{ resultado.ca_ajustada }}</div></div>
+        </div>
+        <div class="grid3">
+          <div><div class="muted">Viabilidade</div><div class="kpi">{{ resultado.viabilidade_pct }}%</div></div>
+          <div><div class="muted">Mortalidade</div><div class="kpi">{{ resultado.mortalidade_pct }}%</div></div>
+          <div><div class="muted">Bonificação</div><div class="kpi">R$ {{ resultado.bonificacao }}</div></div>
+        </div>
+        {% if cadeia == 'avicultura' %}
+        <div class="grid3">
+          <div><div class="muted">IEP</div><div class="kpi">{{ resultado.iep }}</div></div>
+          <div><div class="muted">Peso meta coop</div><div class="kpi">{{ resultado.peso_meta_coop }}</div></div>
+          <div><div class="muted">Idade meta coop</div><div class="kpi">{{ resultado.idade_meta_coop }}</div></div>
+        </div>
+        {% endif %}
+
+        {% if cadeia == 'suinocultura' %}
+        <div class="grid3">
+          <div><div class="muted">Rendimento carcaça</div><div class="kpi">{{ resultado.rendimento_carcaca_pct }}%</div></div>
+          <div><div class="muted">% carne magra</div><div class="kpi">{{ resultado.carne_magra_pct }}%</div></div>
+          <div><div class="muted">Bônus tipificação</div><div class="kpi">R$ {{ resultado.bonus_tipificacao }}</div></div>
+        </div>
+        <div class="grid3">
+          <div><div class="muted">Índice lote</div><div class="kpi">{{ resultado.indice_lote }}</div></div>
+          <div><div class="muted">Peso vivo médio</div><div class="kpi">{{ resultado.peso_vivo_medio }}</div></div>
+          <div><div class="muted">Peso carcaça médio</div><div class="kpi">{{ resultado.peso_carcaca_medio }}</div></div>
+        </div>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <div class="card">
+      <h3>Comparar dois lotes</h3>
+      <form method="get" class="grid">
+        <div>
+          <label>Lote A</label>
+          <select name="c1" required>
+            {% for h in hist %}
+              <option value="{{ h.id }}" {% if c1 == h.id %}selected{% endif %}>{{ h.estrutura }} / {{ h.lote }} ({{ h.criado_em.strftime("%d/%m") }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>Lote B</label>
+          <select name="c2" required>
+            {% for h in hist %}
+              <option value="{{ h.id }}" {% if c2 == h.id %}selected{% endif %}>{{ h.estrutura }} / {{ h.lote }} ({{ h.criado_em.strftime("%d/%m") }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button class="btn btn-pri" type="submit">Comparar</button>
+      </form>
+
+      {% if compare_data %}
+      <canvas id="cmpChart" height="90"></canvas>
+      <script>
+        const cmp = {{ compare_data | tojson }};
+        new Chart(document.getElementById("cmpChart"), {
+          type: "bar",
+          data: {
+            labels: cmp.labels,
+            datasets: [
+              { label: cmp.a_name, data: cmp.a_vals },
+              { label: cmp.b_name, data: cmp.b_vals }
+            ]
+          },
+          options: { responsive: true }
+        });
+      </script>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Histórico</h3>
+      <table>
+        <tr>
+          <th>Data</th><th>Estrutura</th><th>Lote</th><th>GPD</th><th>CA</th><th>CAA</th>
+          <th>Viab%</th><th>Mort%</th><th>IEP/Índice</th><th>Rend. Carcaça%</th><th>Bônus</th>
+          <th>Ações</th>
+        </tr>
+        {% for h in hist %}
+        <tr>
+          <td>{{ h.criado_em.strftime("%d/%m %H:%M") }}</td>
+          <td>{{ h.estrutura }}</td>
+          <td>{{ h.lote }}</td>
+          <td>{{ h.gpd }}</td>
+          <td>{{ h.ca }}</td>
+          <td>{{ h.ca_ajustada }}</td>
+          <td>{{ h.viabilidade_pct }}</td>
+          <td>{{ h.mortalidade_pct }}</td>
+          <td>{% if cadeia == 'avicultura' %}{{ h.iep }}{% else %}{{ h.indice_lote }}{% endif %}</td>
+          <td>{{ h.rendimento_carcaca_pct }}</td>
+          <td>R$ {{ h.bonificacao }}</td>
+          <td>
+            <a class="btn btn-ghost" href="{{ url_for('editar_lote', cadeia=cadeia, batch_id=h.id) }}">Editar</a>
+            <form method="post" action="{{ url_for('excluir_lote', cadeia=cadeia, batch_id=h.id) }}" style="display:inline;">
+              <button type="submit" class="btn btn-ghost" onclick="return confirm('Tem certeza que deseja excluir este lote?');">Excluir</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    """
+    return page(html_content, title=f"AP360 | {cadeia.capitalize()}",
+                cadeia=cadeia, resultado=resultado, hist=hist, compare_data=compare_data, c1=c1, c2=c2,
+                current_user=current_user)
 
 
 @app.route("/avicultura", methods=["GET", "POST"])
@@ -1192,9 +1480,6 @@ def editar_lote(cadeia, batch_id):
         flash(f"Lote de {cadeia} atualizado com sucesso!")
         return redirect(url_for(cadeia))
 
-    # Renderiza o template editar_lote.html (que precisará ser criado)
-    # Por enquanto, vou deixar como render_template_string para não adicionar mais um arquivo agora
-    # Mas o ideal seria criar templates/editar_lote.html
     html_content = """
     <h2>Editar Lote de {{ cadeia|capitalize }}</h2>
     <div class="card" style="max-width:700px;margin:0 auto">
@@ -1653,17 +1938,17 @@ def ia_chat():
 # =========================================================
 @app.errorhandler(403)
 def e403(_):
-    return render_template("base.html", content="<div class='card'><h2>403</h2><p>Acesso negado.</p></div>", title="403"), 403
+    return render_template_string(BASE_HTML, content="<div class='card'><h2>403</h2><p>Acesso negado.</p></div>", title="403"), 403
 
 
 @app.errorhandler(404)
 def e404(_):
-    return render_template("base.html", content="<div class='card'><h2>404</h2><p>Página não encontrada.</p></div>", title="404"), 404
+    return render_template_string(BASE_HTML, content="<div class='card'><h2>404</h2><p>Página não encontrada.</p></div>", title="404"), 404
 
 
 @app.errorhandler(500)
 def e500(_):
-    return render_template("base.html", content="<div class='card'><h2>500</h2><p>Erro interno do servidor.</p></div>", title="500"), 500
+    return render_template_string(BASE_HTML, content="<div class='card'><h2>500</h2><p>Erro interno do servidor.</p></div>", title="500"), 500
 
 
 # =========================================================
