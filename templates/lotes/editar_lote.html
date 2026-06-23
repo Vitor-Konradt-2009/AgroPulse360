@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Editar Lote de {{ cadeia|capitalize }}</h2>
+<div class="card" style="max-width:700px;margin:0 auto">
+  <form method="post">
+    <label>Estrutura</label>
+    <input name="estrutura" value="{{ batch.estrutura }}" required>
+    <label>Lote</label>
+    <input name="lote" value="{{ batch.lote }}" required>
+
+    <label>Data e Hora de Alojamento</label>
+    <input type="date" name="data_alojamento" value="{{ batch.data_alojamento.astimezone(BRASILIA_TZ).strftime('%Y-%m-%d') }}" required>
+    <input type="time" name="hora_alojamento" value="{{ batch.data_alojamento.astimezone(BRASILIA_TZ).strftime('%H:%M') }}" required>
+
+    <label>Data e Hora de Carregamento/Abate</label>
+    <input type="date" name="data_carregamento" value="{{ batch.data_carregamento.astimezone(BRASILIA_TZ).strftime('%Y-%m-%d') }}" required>
+    <input type="time" name="hora_carregamento" value="{{ batch.data_carregamento.astimezone(BRASILIA_TZ).strftime('%H:%M') }}" required>
+
+    <label>Peso inicial médio por animal (kg)</label>
+    <input type="number" step="0.0001" name="peso_inicial" value="{{ batch.peso_inicial }}" required>
+    <label>Peso final médio por animal (kg)</label>
+    <input type="number" step="0.0001" name="peso_final" value="{{ batch.peso_final }}" required>
+
+    <label>Ração TOTAL consumida pelo lote (kg)</label>
+    <input type="number" step="0.0001" name="racao_total_kg" value="{{ batch.racao_total_kg }}" required>
+    <label>Animais iniciais</label>
+    <input type="number" name="animais_iniciais" value="{{ batch.animais_iniciais }}" required>
+    <label>Animais finais (abatidos/vendidos)</label>
+    <input type="number" name="animais_final" value="{{ batch.animais_final }}" required>
+
+    <h4>Minhas referências para este lote (opcional)</h4>
+    <p class="muted">Se preenchido, estes valores sobrescrevem seus benchmarks pessoais e os da cooperativa para este lote.</p>
+    <label>GPD médio (opcional)</label>
+    <input type="number" step="0.0001" name="gpd_coop_ref" value="{{ batch.gpd_coop_ref }}" placeholder="GPD médio (opcional)">
+    <label>CA média (opcional)</label>
+    <input type="number" step="0.0001" name="ca_coop_ref" value="{{ batch.ca_coop_ref }}" placeholder="CA média (opcional)">
+
+    {% if cadeia == 'avicultura' %}
+      <h4>CA Ajustada (Avicultura)</h4>
+      <label>Peso meta coop (kg)</label>
+      <input type="number" step="0.0001" name="peso_meta_coop" value="{{ batch.peso_meta_coop }}" placeholder="Peso meta coop (kg), ex: 2.90">
+      <label>Idade meta coop (dias)</label>
+      <input type="number" step="0.01" name="idade_meta_coop" value="{{ batch.idade_meta_coop }}" placeholder="Idade meta coop (dias), ex: 42.5">
+      <label>Fator peso CAA</label>
+      <input type="number" step="0.0001" name="fator_peso_caa" value="{{ batch.fator_peso_caa }}" placeholder="Fator peso CAA, ex: 0.30">
+      <label>Fator idade CAA</label>
+      <input type="number" step="0.0001" name="fator_idade_caa" value="{{ batch.fator_idade_caa }}" placeholder="Fator idade CAA, ex: 0.01">
+    {% endif %}
+
+    {% if cadeia == 'suinocultura' %}
+      <h4>Carcaça e tipificação (Suínos)</h4>
+      <label>Peso vivo médio (kg/cab)</label>
+      <input type="number" step="0.01" name="peso_vivo_medio" value="{{ batch.peso_vivo_medio }}" required>
+      <label>Peso carcaça médio (kg/cab)</label>
+      <input type="number" step="0.01" name="peso_carcaca_medio" value="{{ batch.peso_carcaca_medio }}" required>
+      <label>% carne magra</label>
+      <input type="number" step="0.01" name="carne_magra_pct" value="{{ batch.carne_magra_pct }}" required>
+    {% endif %}
+
+    <button class="btn btn-ok" type="submit">Salvar Alterações</button>
+    <a class="btn btn-ghost" href="{{ url_for('modulo_lotes', cadeia=cadeia) }}">Cancelar</a>
+  </form>
+</div>
+{% endblock %}

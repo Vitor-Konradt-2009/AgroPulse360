@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>403</h2>
+  <p>Acesso negado. Você não tem permissão para acessar esta página.</p>
+  <a href="{{ url_for('dashboard') }}" class="btn btn-pri">Voltar para o Dashboard</a>
+</div>
+{% endblock %}
