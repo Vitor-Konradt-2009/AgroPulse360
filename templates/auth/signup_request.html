@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Solicitar Acesso</h2>
+<div class="card" style="max-width:500px;margin:0 auto">
+  <form method="post">
+    <label>Nome Completo</label>
+    <input name="nome" required>
+    <label>Email</label>
+    <input type="email" name="email" required>
+    <label>CPF (opcional)</label>
+    <input name="cpf">
+    <label>Telefone (opcional)</label>
+    <input name="telefone">
+    <label>Segmento</label>
+    <select name="segmento">
+      <option value="agricultura">Agricultura</option>
+      <option value="avicultura">Avicultura</option>
+      <option value="suinocultura">Suinocultura</option>
+      <option value="bovinocultura">Bovinocultura</option>
+      <option value="misto">Misto</option>
+    </select>
+    <label>Cooperativa (opcional)</label>
+    <input name="cooperativa">
+    <button class="btn btn-pri" type="submit">Enviar Solicitação</button>
+  </form>
+  <p class="muted">Dúvidas? Fale conosco pelo WhatsApp: <a href="{{ whatsapp_link }}" target="_blank" class="btn btn-ok">Falar no WhatsApp</a></p>
+</div>
+{% endblock %}
